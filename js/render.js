@@ -16,9 +16,17 @@ function layoutSystems(measures, width) {
   return rows;
 }
 
+// 不正な長さ(durationInfo が引けない)の事象は安全に無視する
+function emptyRestNote(hand) {
+  var n = new VF.StaveNote({ clef: hand === "R" ? "treble" : "bass", keys: [hand === "R" ? "b/4" : "d/3"], duration: "wr" });
+  n.setStyle({ fillStyle: COLOR.empty, strokeStyle: COLOR.empty });
+  return n;
+}
+
 function buildNote(ev, score, opts) {
   var clef = ev.hand === "R" ? "treble" : "bass";
   var info = durationInfo(ev.dur);
+  if (!info) return null;
   var note;
   if (ev.rest || ev.notes.length === 0) {
     note = new VF.StaveNote({ clef: clef, keys: [clef === "treble" ? "b/4" : "d/3"], duration: info.vf + "r" });
@@ -34,7 +42,7 @@ function buildNote(ev, score, opts) {
   if (info.dots) VF.Dot.buildAndAttach([note], { all: true });
   note.setAttribute("id", ev.id);
   if (opts.selectedId === ev.id) note.setStyle({ fillStyle: COLOR.select, strokeStyle: COLOR.select });
-  else if (opts.playheadTick != null && ev.tick <= opts.playheadTick && opts.playheadTick < ev.tick + ev.dur) note.setStyle({ fillStyle: COLOR.playhead, strokeStyle: COLOR.playhead });
+  else if (opts.playheadTick != null && (!opts.playheadHands || opts.playheadHands.indexOf(ev.hand) >= 0) && ev.tick <= opts.playheadTick && opts.playheadTick < ev.tick + ev.dur) note.setStyle({ fillStyle: COLOR.playhead, strokeStyle: COLOR.playhead });
   return note;
 }
 
@@ -78,11 +86,14 @@ function drawRows(score, rows, container, opts) {
         var evs = mea[hand];
         var notes;
         if (evs.length === 0) {
-          var rest = new VF.StaveNote({ clef: hand === "R" ? "treble" : "bass", keys: [hand === "R" ? "b/4" : "d/3"], duration: "wr" });
-          rest.setStyle({ fillStyle: COLOR.empty, strokeStyle: COLOR.empty });
-          notes = [rest];
+          notes = [emptyRestNote(hand)];
         } else {
-          notes = evs.map(function (ev) { var n = buildNote(ev, score, opts); noteById[ev.id] = n; staveOf[ev.id] = hand === "R" ? st : sb; rowOf[ev.id] = r; return n; });
+          notes = evs.map(function (ev) {
+            var n = buildNote(ev, score, opts);
+            if (n) { noteById[ev.id] = n; staveOf[ev.id] = hand === "R" ? st : sb; rowOf[ev.id] = r; }
+            return n;
+          }).filter(function (n) { return n; });
+          if (notes.length === 0) notes = [emptyRestNote(hand)];
         }
         var v = new VF.Voice({ num_beats: ts.beats, beat_value: ts.unit }).setMode(VF.Voice.Mode.SOFT).addTickables(notes);
         voices[hand] = v; notesOf[hand] = notes;
@@ -153,7 +164,7 @@ function renderScore(score, container, opts) {
   var measures = deriveMeasures(score);
   var rows = layoutSystems(measures, opts.width);
   var lastMeasureIndex = measures.length ? measures[measures.length - 1].index : -1;
-  var height = drawRows(score, rows, container, { width: opts.width, mode: opts.mode, showDoremi: opts.showDoremi, selectedId: opts.selectedId, cursor: opts.cursor, playheadTick: opts.playheadTick, lastMeasureIndex: lastMeasureIndex });
+  var height = drawRows(score, rows, container, { width: opts.width, mode: opts.mode, showDoremi: opts.showDoremi, selectedId: opts.selectedId, cursor: opts.cursor, playheadTick: opts.playheadTick, playheadHands: opts.playheadHands, lastMeasureIndex: lastMeasureIndex });
   return { rows: rows, height: height };
 }
 

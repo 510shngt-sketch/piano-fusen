@@ -1,6 +1,6 @@
 "use strict";
 var state = {
-  score: null, hand: "R", baseDur: 48, dotted: false, restMode: false, chordMode: false, chordAnchorId: null,
+  score: null, hand: "R", baseDur: 48, dotted: false, chordMode: false, chordAnchorId: null,
   cursor: { R: 0, L: 0 }, selectedId: null, history: [], future: []
 };
 var HISTORY_MAX = 100;
@@ -24,7 +24,6 @@ function render() {
 function renderToolbarState() {
   document.querySelectorAll("#toolNotes [data-dur]").forEach(function (b) { b.classList.toggle("on", Number(b.dataset.dur) === state.baseDur); });
   $("btnDotted").classList.toggle("on", state.dotted);
-  $("btnRest").classList.toggle("on", state.restMode);
   $("btnChord").classList.toggle("on", state.chordMode);
   $("btnHandR").classList.toggle("on", state.hand === "R");
   $("btnHandL").classList.toggle("on", state.hand === "L");
@@ -88,12 +87,16 @@ function setDuration(ticks) {
 }
 function setDotted(on) {
   var sel = state.selectedId ? findEvent(state.selectedId) : null;
-  if (sel) { var base = durationInfo(sel.dur); var b = base.dots ? sel.dur / 1.5 : sel.dur; var nd = on ? (b === 192 ? 192 : b * 1.5) : b; if (durationInfo(nd)) mutate(function () { sel.dur = nd; }); return; }
+  if (sel) {
+    var base = durationInfo(sel.dur);
+    if (!base) return;
+    var b = base.dots ? sel.dur / 1.5 : sel.dur; var nd = on ? (b === 192 ? 192 : b * 1.5) : b; if (durationInfo(nd)) mutate(function () { sel.dur = nd; }); return;
+  }
   state.dotted = on && state.baseDur !== 192; renderToolbarState();
 }
 function setHand(h) { state.hand = h; state.chordAnchorId = null; state.selectedId = null; render(); scrollKeyboardTo(h === "R" ? 60 : 48); }
 function setChordMode(on) { state.chordMode = on; state.chordAnchorId = null; renderToolbarState(); }
-function setRestMode(on) { state.restMode = on; renderToolbarState(); if (on) { addRest(); state.restMode = false; renderToolbarState(); } }
+function setRestMode() { addRest(); }
 function scrollToCursor() { var w = $("scoreWrap"); var evs = handEvents(state.score, state.hand); if (state.cursor[state.hand] >= evs.length) w.scrollTop = w.scrollHeight; }
 
 // ---- 音符面のボタン ----
@@ -137,7 +140,7 @@ function buildKeyboard() {
   kb.appendChild(inner);
   var down = function (e) {
     var t = e.target.closest("[data-midi]"); if (!t) return;
-    e.preventDefault(); t.style.filter = "brightness(0.8)";
+    t.style.filter = "brightness(0.8)";
     addNote(Number(t.dataset.midi));
     setTimeout(function () { t.style.filter = ""; }, 120);
   };
@@ -149,17 +152,20 @@ function scrollKeyboardTo(midi) {
 }
 
 // ---- 再生 ----
-var playState = { tick: null, lastKey: "" };
+var playState = { tick: null, lastKey: "", hands: "RL" };
 function renderPlayhead(tick) {
-  var ids = state.score.events.filter(function (e) { return !e.rest && e.tick <= tick && tick < e.tick + e.dur; }).map(function (e) { return e.id; }).join(",");
+  var hands = playState.hands || "RL";
+  var ids = state.score.events.filter(function (e) { return !e.rest && hands.indexOf(e.hand) >= 0 && e.tick <= tick && tick < e.tick + e.dur; }).map(function (e) { return e.id; }).join(",");
   if (ids === playState.lastKey) return;      // 光る音符が変わったときだけ描き直す
   playState.lastKey = ids; playState.tick = tick;
-  renderScore(state.score, $("score"), { width: Math.max(320, $("scoreWrap").clientWidth), mode: "edit", showDoremi: state.score.showDoremi.screen, selectedId: null, cursor: null, playheadTick: tick });
+  renderScore(state.score, $("score"), { width: Math.max(320, $("scoreWrap").clientWidth), mode: "edit", showDoremi: state.score.showDoremi.screen, selectedId: null, cursor: null, playheadTick: tick, playheadHands: hands });
   var first = ids.split(",")[0], g = first ? document.getElementById("vf-" + first) : null;
   if (g) { var r = g.getBoundingClientRect(), w = $("scoreWrap").getBoundingClientRect(); if (r.top < w.top || r.bottom > w.bottom) g.scrollIntoView({ block: "center" }); }
 }
+function setPlayBpm(v) { $("playBpm").value = v; $("playBpmVal").textContent = "♩=" + v; }
 function play() {
-  var ok = Player.start(state.score, { hands: $("playHands").value, bpm: Number($("playBpm").value) || state.score.bpm,
+  playState.hands = $("playHands").value;
+  var ok = Player.start(state.score, { hands: playState.hands, bpm: Number($("playBpm").value) || state.score.bpm,
     onTick: renderPlayhead, onEnd: stop });
   if (!ok) { toast("鳴らす音符がありません", true); return; }
   $("btnPlay").hidden = true; $("btnStop").hidden = false; playState.lastKey = "";
@@ -167,7 +173,7 @@ function play() {
 function stop() { Player.stop(); $("btnPlay").hidden = false; $("btnStop").hidden = true; playState.lastKey = ""; render(); }
 function bindPlayback() {
   $("btnPlay").onclick = play; $("btnStop").onclick = stop;
-  $("playBpm").oninput = function () { $("playBpm").title = "♩=" + $("playBpm").value; };
+  $("playBpm").oninput = function () { setPlayBpm($("playBpm").value); };
 }
 
 // ---- 起動 ----
@@ -176,15 +182,18 @@ function openScoreObject(s) {
   state.cursor = { R: handEvents(s, "R").length, L: handEvents(s, "L").length };
   state.history = []; state.future = [];
   setLastOpen(s.id); render();
-  $("playBpm").value = s.bpm; if (Player.playing) stop();
+  setPlayBpm(s.bpm); if (Player.playing) stop();
 }
 function boot() {
   buildToolbar(); buildKeyboard();
   buildSignsFace(); bindEditing();
   buildSettingsDialog(); buildListDialog();
   bindPlayback(); bindPrint();
-  var last = getLastOpen(), s = last ? loadScore(last) : null;
-  if (!s) { var list = listScores(); s = list.length ? loadScore(list[0].id) : null; }
+  var lastId = getLastOpen();
+  var ids = listScores().map(function (m) { return m.id; });
+  if (lastId) { ids = ids.filter(function (id) { return id !== lastId; }); ids.unshift(lastId); }
+  var s = null;
+  for (var i = 0; i < ids.length && !s; i++) s = loadScore(ids[i]);
   if (!s) { s = newScore(); saveScore(s); }
   openScoreObject(s);
   scrollKeyboardTo(60);
@@ -201,10 +210,10 @@ function select(id) {
   if (id && !findEvent(id)) return;
   if (state.selectedId === id) id = null;
   state.selectedId = id;
+  state.chordAnchorId = null;
   if (id) {
     var ev = findEvent(id); state.hand = ev.hand;
     state.cursor[ev.hand] = handEvents(state.score, ev.hand).indexOf(ev) + 1;
-    state.chordAnchorId = null;
   }
   render();
   if (id) {
@@ -232,16 +241,7 @@ function setAccidental(acc) {
   var sel = state.selectedId ? findEvent(state.selectedId) : null;
   if (!sel || sel.rest) { toast("先に音符をタップして選んでください", true); return; }
   mutate(function () {
-    var same = sel.notes.every(function (n) { return n.acc === acc; });
-    sel.notes.forEach(function (n) {
-      if (same) { n.acc = null; return; }
-      // ♯: 白鍵なら半音上げて♯綴り、既に♯なら維持。♭: 白鍵なら半音下げて♭綴り。♮: 綴りだけ♮に(高さは変えない)
-      var sp = spellMidi(n.midi, state.score.keySig, n.acc);
-      var white = (sp.accidental === "" || sp.accidental === "n");
-      if (acc === "#") { if (white) n.midi += 1; else if (sp.accidental === "b") n.midi += 2; n.acc = "#"; }
-      else if (acc === "b") { if (white) n.midi -= 1; else if (sp.accidental === "#") n.midi -= 2; n.acc = "b"; }
-      else { n.acc = "n"; }
-    });
+    sel.notes.forEach(function (n) { applyAccidental(n, acc, state.score.keySig); });
   });
 }
 function toggleTie() {
@@ -249,7 +249,7 @@ function toggleTie() {
   if (!sel || sel.rest) { toast("先に音符をタップして選んでください", true); return; }
   mutate(function () { sel.tie = !sel.tie; });
 }
-function moveCursorToEnd() { state.selectedId = null; state.cursor[state.hand] = handEvents(state.score, state.hand).length; render(); scrollToCursor(); }
+function moveCursorToEnd() { state.selectedId = null; state.chordAnchorId = null; state.cursor[state.hand] = handEvents(state.score, state.hand).length; render(); scrollToCursor(); }
 function undo() {
   if (!state.history.length) return;
   state.future.push(JSON.stringify(state.score));
@@ -282,6 +282,7 @@ function bindEditing() {
   $("btnDelete").onclick = deleteSelected;
   $("btnUndo").onclick = undo; $("btnRedo").onclick = redo;
   document.addEventListener("keydown", function (e) {
+    if (document.querySelector("dialog[open]")) return;
     if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA") return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); }
     else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") { e.preventDefault(); redo(); }
@@ -305,6 +306,7 @@ function updateSettings(patch) {
     if (patch.keySig) s.keySig = keySigInfo(patch.keySig).name;
     if (patch.showDoremi) s.showDoremi = { screen: !!patch.showDoremi.screen, print: !!patch.showDoremi.print };
   });
+  if (patch.bpm != null) setPlayBpm(state.score.bpm);
 }
 function openSettings() {
   var s = state.score;
@@ -332,7 +334,7 @@ function buildSettingsDialog() {
 function newScoreAction() { var s = newScore(); saveScore(s); openScoreObject(s); $("dlgList").close(); }
 function openScore(id) { var s = loadScore(id); if (!s) { toast("その曲は開けませんでした"); return; } openScoreObject(s); $("dlgList").close(); }
 function duplicateScore(id) {
-  var s = loadScore(id); if (!s) return;
+  var s = loadScore(id); if (!s) { toast("その曲は開けませんでした"); return; }
   s.id = newId("s"); s.title = s.title + " のコピー"; s.createdAt = new Date().toISOString();
   s.events.forEach(function (e) { e.id = newId("e"); });
   saveScore(s); openScoreObject(s); $("dlgList").close();
@@ -374,6 +376,7 @@ var PRINT = { widthPx: Math.round(180 / 25.4 * 96), heightPx: Math.round(267 / 2
 function preparePrint() {
   return renderPrintPages(state.score, $("printArea"), { width: PRINT.widthPx, height: PRINT.heightPx, showDoremi: state.score.showDoremi.print });
 }
+// 印刷用DOMを描いてから印刷ダイアログを開くため、描画を1フレーム待つ
 function printNow() { preparePrint(); setTimeout(function () { window.print(); }, 50); }
 function bindPrint() {
   $("btnPrint").onclick = printNow;

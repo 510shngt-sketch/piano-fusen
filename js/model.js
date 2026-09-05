@@ -122,6 +122,16 @@ function spellMidi(midi, keySig, acc) {
     letter = natural; accidental = acc === "n" ? "n" : "";
     // 調号で変化する文字が白鍵の音として出たら、♮を明示
     if (acc == null && alt[letter]) accidental = "n";
+    if (letter == null) {
+      // 黒鍵に♮が保存されていた古いデータ用の保険: ♯(調号が♭系なら♭)綴りへ逃がして letter が null にならないようにする
+      if (preferFlat) {
+        for (var fb = 0; fb < LETTERS.length; fb++) if (((LETTER_PC[LETTERS[fb]] + 11) % 12) === pc) letter = LETTERS[fb];
+        accidental = "b";
+      } else {
+        for (var fs = 0; fs < LETTERS.length; fs++) if (((LETTER_PC[LETTERS[fs]] + 1) % 12) === pc) letter = LETTERS[fs];
+        accidental = "#";
+      }
+    }
   }
   // 調号でカバーされる音は臨時記号を空にする(applyAccidentalsが判断できるよう vfKey には残す)
   var octave = Math.floor(midi / 12) - 1;
@@ -132,6 +142,28 @@ function spellMidi(midi, keySig, acc) {
   return { letter: letter, accidental: accidental, octave: octave, vfKey: vfKey, doremi: dore };
 }
 function doremiOf(midi, keySig, acc) { return spellMidi(midi, keySig, acc).doremi; }
+
+// 臨時記号ボタンを1音に適用する。表示中の臨時記号と同じボタンなら外して自然音へ戻す
+function applyAccidental(note, acc, keySig) {
+  var sp = spellMidi(note.midi, keySig, note.acc);
+  var shown = sp.accidental;                         // "" | "#" | "b" | "n"
+  var white = (shown === "" || shown === "n");
+  if (acc === "#") {
+    if (shown === "#") { note.midi -= 1; note.acc = null; }        // ♯を外す → 自然音
+    else if (white)    { note.midi += 1; note.acc = "#"; }
+    else               { note.midi += 2; note.acc = "#"; }         // ♭の音に♯
+  } else if (acc === "b") {
+    if (shown === "b") { note.midi += 1; note.acc = null; }
+    else if (white)    { note.midi -= 1; note.acc = "b"; }
+    else               { note.midi -= 2; note.acc = "b"; }         // ♯の音に♭
+  } else {                                                          // "n"
+    if (shown === "#")      { note.midi -= 1; note.acc = "n"; }
+    else if (shown === "b") { note.midi += 1; note.acc = "n"; }
+    else if (shown === "n") { note.acc = null; }                    // 明示♮を外す
+    else                    { note.acc = "n"; }                     // 白鍵に明示♮
+  }
+  return note;
+}
 
 function normalizeScore(obj) {
   if (!obj || typeof obj !== "object" || !Array.isArray(obj.events)) throw new Error("読み込めない曲データです");
@@ -163,5 +195,5 @@ if (typeof module !== "undefined") module.exports = {
   FORMAT_VERSION: FORMAT_VERSION, TPQ: TPQ, DURATIONS: DURATIONS, KEY_SIGS: KEY_SIGS, TIME_SIGS: TIME_SIGS,
   newId: newId, newScore: newScore, keySigInfo: keySigInfo, measureTicks: measureTicks, durationInfo: durationInfo,
   handEvents: handEvents, relayoutHand: relayoutHand, deriveMeasures: deriveMeasures,
-  spellMidi: spellMidi, doremiOf: doremiOf, normalizeScore: normalizeScore
+  spellMidi: spellMidi, doremiOf: doremiOf, applyAccidental: applyAccidental, normalizeScore: normalizeScore
 };

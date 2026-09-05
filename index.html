@@ -15,7 +15,7 @@
   #infobar { flex-wrap:wrap; }
   #infobar select { font:inherit; min-height:40px; border:1px solid var(--line); border-radius:8px; background:#fff; }
   #scoreTitle { flex:1; text-align:center; font-weight:600; font-size:16px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  #infoMeta { flex:1; color:var(--muted); font-size:13px; }
+  #infoMeta { flex:1; color:var(--muted); font-size:13px; cursor:pointer; }
   #scoreWrap { flex:1; overflow:auto; background:#fff; position:relative; }
   #score svg { display:block; }
   #toolbar { background:#f3f3f3; border-top:1px solid var(--line); padding:6px 8px; }
@@ -23,7 +23,7 @@
   .face[hidden] { display:none; }
   .faceTabs { display:flex; gap:6px; margin-bottom:6px; }
   .spacer { flex:1; }
-  #keyboard { height:150px; background:#fff; border-top:1px solid var(--line); position:relative; overflow-x:auto; overflow-y:hidden; }
+  #keyboard { height:150px; background:#fff; border-top:1px solid var(--line); position:relative; overflow-x:auto; overflow-y:hidden; touch-action:pan-x; user-select:none; -webkit-user-select:none; }
   #printArea { display:none; }
   #toast { position:fixed; left:50%; top:8px; transform:translateX(-50%); background:#c62828; color:#fff; padding:8px 14px; border-radius:8px; font-size:14px; display:none; z-index:50; }
   #toast.info { background:#333; }
@@ -60,7 +60,8 @@
   <div id="infobar">
     <div id="infoMeta">4/4拍子 ・ ハ長調 ・ ♩=90</div>
     <select id="playHands" aria-label="鳴らす手"><option value="RL">両手</option><option value="R">右手</option><option value="L">左手</option></select>
-    <input id="playBpm" type="range" min="40" max="200" step="1" aria-label="再生テンポ" style="width:80px">
+    <input id="playBpm" type="range" min="30" max="240" step="1" aria-label="再生テンポ" style="width:80px">
+    <span id="playBpmVal" style="font-size:12px;color:var(--muted);min-width:3em">♩=90</span>
     <button id="btnPlay">▶ 再生</button>
     <button id="btnStop" hidden>■ 停止</button>
     <button id="btnPrint">🖨 印刷</button>
