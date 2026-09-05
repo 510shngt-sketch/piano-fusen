@@ -99,20 +99,52 @@ function setChordMode(on) { state.chordMode = on; state.chordAnchorId = null; re
 function setRestMode() { addRest(); }
 function scrollToCursor() { var w = $("scoreWrap"); var evs = handEvents(state.score, state.hand); if (state.cursor[state.hand] >= evs.length) w.scrollTop = w.scrollHeight; }
 
+// ---- 音符アイコン(viewBox 24x32、currentColor で塗る。ボタンの on 状態で色が変わる) ----
+function noteIcon(kind) {
+  var head = function (cx, cy, filled) {
+    return '<ellipse cx="' + cx + '" cy="' + cy + '" rx="5.2" ry="3.6" transform="rotate(-20 ' + cx + ' ' + cy + ')"' + (filled ? '' : ' fill="none" stroke-width="2"') + '/>';
+  };
+  var stem = function (x, y1, y2) { return '<rect x="' + (x - 0.8) + '" y="' + y1 + '" width="1.6" height="' + (y2 - y1) + '"/>'; };
+  var flag = function (x, y) { return '<path d="M' + x + ' ' + y + ' q7 3 6 11 q1-6-6-7z"/>'; };
+  var body = "";
+  switch (kind) {
+    case "w": body = head(12, 20, false); break;
+    case "h": body = head(10, 24, false) + stem(14.6, 6, 24); break;
+    case "q": body = head(10, 24, true) + stem(14.6, 6, 24); break;
+    case "8": body = head(10, 24, true) + stem(14.6, 6, 24) + flag(15.4, 6); break;
+    case "16": body = head(10, 24, true) + stem(14.6, 6, 24) + flag(15.4, 6) + flag(15.4, 11); break;
+    case "dot": body = head(9, 24, true) + stem(13.6, 6, 24) + '<circle cx="19" cy="24" r="1.6"/>'; break;
+    case "rest": body = '<path d="M11 4 h3 l-4 7 h3 l-4 6 h3 l-5 8 c3-1 4 0 3 2 c3-1 4-4 1-5 l4-6 h-3 l4-7z"/>'; break;
+    case "chord": body = head(10, 24, true) + head(10, 19, true) + head(10, 14, true) + stem(14.6, 2, 24); break;
+  }
+  return '<svg viewBox="0 0 24 32" aria-hidden="true">' + body + '</svg>';
+}
+
 // ---- 音符面のボタン ----
 function buildToolbar() {
   var tn = $("toolNotes");
-  [[192, "𝅝 全"], [96, "𝅗𝅥 2分"], [48, "♩ 4分"], [24, "♪ 8分"], [12, "𝅘𝅥𝅯 16分"]].forEach(function (d) {
-    var b = document.createElement("button"); b.dataset.dur = d[0]; b.textContent = d[1];
+  [[192, "w", "全音符"], [96, "h", "2分音符"], [48, "q", "4分音符"], [24, "8", "8分音符"], [12, "16", "16分音符"]].forEach(function (d) {
+    var b = document.createElement("button"); b.dataset.dur = d[0]; b.innerHTML = noteIcon(d[1]);
+    b.setAttribute("aria-label", d[2]); b.title = d[2];
     b.onclick = function () { setDuration(d[0]); }; tn.appendChild(b);
   });
-  var mk = function (id, text, fn) { var b = document.createElement("button"); b.id = id; b.textContent = text; b.onclick = fn; tn.appendChild(b); return b; };
-  mk("btnDotted", "付点", function () { setDotted(!state.dotted); });
-  mk("btnRest", "休符", function () { setRestMode(true); });
-  mk("btnChord", "和音", function () { setChordMode(!state.chordMode); });
-  var sp = document.createElement("span"); sp.className = "spacer"; tn.appendChild(sp);
-  mk("btnHandR", "右手", function () { setHand("R"); });
-  mk("btnHandL", "左手", function () { setHand("L"); });
+  var mk = function (id, kind, label, fn) {
+    var b = document.createElement("button"); b.id = id; b.innerHTML = noteIcon(kind);
+    b.setAttribute("aria-label", label); b.title = label; b.onclick = fn; tn.appendChild(b); return b;
+  };
+  mk("btnDotted", "dot", "付点", function () { setDotted(!state.dotted); });
+  mk("btnRest", "rest", "休符", function () { setRestMode(true); });
+  mk("btnChord", "chord", "和音", function () { setChordMode(!state.chordMode); });
+
+  var spacer = document.querySelector(".faceTabs .spacer");
+  var mkHand = function (id, label, fn) {
+    var b = document.createElement("button"); b.id = id; b.textContent = label;
+    b.setAttribute("aria-label", label); b.title = label; b.onclick = fn;
+    spacer.parentNode.insertBefore(b, spacer); return b;
+  };
+  mkHand("btnHandR", "右手", function () { setHand("R"); });
+  mkHand("btnHandL", "左手", function () { setHand("L"); });
+
   $("btnFaceNotes").onclick = function () { $("toolNotes").hidden = false; $("toolSigns").hidden = true; $("btnFaceNotes").classList.add("on"); $("btnFaceSigns").classList.remove("on"); };
   $("btnFaceSigns").onclick = function () { $("toolNotes").hidden = true; $("toolSigns").hidden = false; $("btnFaceSigns").classList.add("on"); $("btnFaceNotes").classList.remove("on"); };
 }

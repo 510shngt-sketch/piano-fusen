@@ -1,7 +1,7 @@
 "use strict";
 var VF = Vex.Flow;
 var LAYOUT = { marginX: 10, top: 30, staffGap: 90, rowHeight: 210, minMeasureWidth: 130, firstExtra: 80, maxPerRow: 6 };
-var COLOR = { select: "#1d6fd6", playhead: "#e07b00", warn: "#fff3b0", cursor: "#1d6fd6", empty: "#9a9a9a" };
+var COLOR = { select: "#1d6fd6", playhead: "#e07b00", warn: "#fff3b0", warnText: "#8a6d00", cursor: "#1d6fd6", empty: "#9a9a9a" };
 
 // 幅から「1段に何小節・各小節の幅」を決める。最初の小節は音部記号・調号ぶん広い
 function layoutSystems(measures, width) {
@@ -51,6 +51,17 @@ function beamGroups(timeSig) {
   return [new VF.Fraction(1, 4)];
 }
 
+// 拍が合っていない小節: 五線にぴったり重ねて黄色く塗り、理由を添える(編集時のみ)
+function drawWarn(ctx, stave, x, w) {
+  var top = stave.getYForLine(0) - 12, bottom = stave.getYForLine(4) + 12;
+  ctx.save();
+  ctx.setFillStyle(COLOR.warn); ctx.fillRect(x, top, w, bottom - top);
+  // 文字は音部記号・拍子記号にかぶらないよう、音符の開始位置から
+  var lx = Math.max(x + 4, stave.getNoteStartX() - 6);
+  ctx.setFillStyle(COLOR.warnText); ctx.setFont("sans-serif", 9); ctx.fillText("拍が合いません", lx, top + 9);
+  ctx.restore();
+}
+
 // rows を container 内の1つのSVGに描く。戻り値は高さ
 function drawRows(score, rows, container, opts) {
   var renderer = new VF.Renderer(container, VF.Renderer.Backends.SVG);
@@ -73,8 +84,8 @@ function drawRows(score, rows, container, opts) {
       }
       if (mea.index === lastMeasureIndex && opts.mode === "print") { st.setEndBarType(VF.Barline.type.END); sb.setEndBarType(VF.Barline.type.END); }
       if (opts.mode === "edit") {
-        if (mea.warn.R) { ctx.save(); ctx.setFillStyle(COLOR.warn); ctx.fillRect(x, y - 8, w, 56); ctx.restore(); }
-        if (mea.warn.L) { ctx.save(); ctx.setFillStyle(COLOR.warn); ctx.fillRect(x, y + LAYOUT.staffGap - 8, w, 56); ctx.restore(); }
+        if (mea.warn.R) drawWarn(ctx, st, x, w);
+        if (mea.warn.L) drawWarn(ctx, sb, x, w);
       }
       st.setContext(ctx).draw(); sb.setContext(ctx).draw();
       if (k === 0) {

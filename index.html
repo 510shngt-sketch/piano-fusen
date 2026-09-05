@@ -4,26 +4,43 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <title>ピアノ譜せん</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="ピアノ譜せん">
+<meta name="theme-color" content="#1d6fd6">
 <style>
   :root { --accent:#1d6fd6; --accent-bg:#e3eefc; --warn-bg:#fff3b0; --line:#d5d5d5; --text:#222; --muted:#666; }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   html, body { margin:0; height:100%; font-family: system-ui, -apple-system, "Hiragino Sans", "Yu Gothic UI", sans-serif; color:var(--text); background:#fafafa; }
-  body { display:flex; flex-direction:column; height:100dvh; overflow:hidden; }
+  body { display:flex; flex-direction:column; height:100dvh; overflow:hidden; padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }  /* ホーム画面起動時のノッチ・ホームバーを避ける */
   button { font: inherit; min-height:44px; min-width:44px; border:1px solid var(--line); background:#fff; border-radius:8px; padding:0 10px; color:var(--text); }
   button.on { background:var(--accent-bg); border-color:var(--accent); color:var(--accent); font-weight:600; }
-  #topbar, #infobar { display:flex; align-items:center; gap:8px; padding:6px 8px; background:#fff; border-bottom:1px solid var(--line); }
-  #infobar { flex-wrap:wrap; }
-  #infobar select { font:inherit; min-height:40px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+  #topbar, #infobar { display:flex; align-items:center; gap:6px; padding:4px 6px; background:#fff; border-bottom:1px solid var(--line); flex-wrap:nowrap; }
+  #infobar select { font:inherit; min-height:40px; border:1px solid var(--line); border-radius:8px; background:#fff; flex:none; }
   #scoreTitle { flex:1; text-align:center; font-weight:600; font-size:16px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  #infoMeta { flex:1; color:var(--muted); font-size:13px; cursor:pointer; }
-  #scoreWrap { flex:1; overflow:auto; background:#fff; position:relative; }
+  #infoMeta { flex:1; min-width:0; color:var(--muted); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer; }
+  #playBpm { width:64px; flex:none; }
+  #playBpmVal { font-size:12px; color:var(--muted); min-width:3.2em; flex:none; }
+  .iconBtn { min-width:44px; padding:0; font-size:20px; }
+  #scoreWrap { flex:1; min-height:140px; overflow:auto; background:#fff; position:relative; }
   #score svg { display:block; }
-  #toolbar { background:#f3f3f3; border-top:1px solid var(--line); padding:6px 8px; }
-  .face { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+  #toolbar { background:#f3f3f3; border-top:1px solid var(--line); padding:4px 6px; }
+  .face { display:flex; gap:4px; align-items:center; flex-wrap:nowrap; overflow-x:auto; }
   .face[hidden] { display:none; }
-  .faceTabs { display:flex; gap:6px; margin-bottom:6px; }
+  .faceTabs { display:flex; gap:4px; margin-bottom:4px; align-items:center; }
+  .face button, .faceTabs button { min-width:40px; padding:0 6px; flex:none; }
+  .face button svg { width:22px; height:30px; display:block; fill:currentColor; stroke:currentColor; }
   .spacer { flex:1; }
-  #keyboard { height:150px; background:#fff; border-top:1px solid var(--line); position:relative; overflow-x:auto; overflow-y:hidden; touch-action:pan-x; user-select:none; -webkit-user-select:none; }
+  #keyboard { height:132px; background:#fff; border-top:1px solid var(--line); position:relative; overflow-x:auto; overflow-y:hidden; touch-action:pan-x; user-select:none; -webkit-user-select:none; }
+  @media (max-height: 520px) {
+    #topbar, #infobar { padding:2px 6px; }
+    button { min-height:36px; }
+    .face button svg { height:24px; }
+    #keyboard { height:84px; }
+    #scoreWrap { min-height:110px; }
+  }
   #printArea { display:none; }
   #toast { position:fixed; left:50%; top:8px; transform:translateX(-50%); background:#c62828; color:#fff; padding:8px 14px; border-radius:8px; font-size:14px; display:none; z-index:50; }
   #toast.info { background:#333; }
@@ -55,16 +72,16 @@
   <div id="topbar">
     <button id="btnList" aria-label="曲一覧">☰ 曲一覧</button>
     <div id="scoreTitle">新しい曲</div>
-    <button id="btnSettings" aria-label="曲の設定">⚙ 設定</button>
+    <button id="btnSettings" class="iconBtn" aria-label="曲の設定" title="曲の設定">⚙</button>
+    <button id="btnPrint" class="iconBtn" aria-label="印刷" title="印刷">🖨</button>
   </div>
   <div id="infobar">
     <div id="infoMeta">4/4拍子 ・ ハ長調 ・ ♩=90</div>
     <select id="playHands" aria-label="鳴らす手"><option value="RL">両手</option><option value="R">右手</option><option value="L">左手</option></select>
-    <input id="playBpm" type="range" min="30" max="240" step="1" aria-label="再生テンポ" style="width:80px">
-    <span id="playBpmVal" style="font-size:12px;color:var(--muted);min-width:3em">♩=90</span>
+    <input id="playBpm" type="range" min="30" max="240" step="1" aria-label="再生テンポ">
+    <span id="playBpmVal">♩=90</span>
     <button id="btnPlay">▶ 再生</button>
     <button id="btnStop" hidden>■ 停止</button>
-    <button id="btnPrint">🖨 印刷</button>
   </div>
   <div id="scoreWrap"><div id="score"></div></div>
   <div id="toolbar">
@@ -72,9 +89,9 @@
       <button id="btnFaceNotes" class="on">音符</button>
       <button id="btnFaceSigns">記号</button>
       <span class="spacer"></span>
-      <button id="btnUndo" title="戻す">↶ 戻す</button>
-      <button id="btnRedo" title="やり直す">↷</button>
-      <button id="btnDelete">⌫ 消す</button>
+      <button id="btnUndo" aria-label="戻す" title="戻す">↶</button>
+      <button id="btnRedo" aria-label="やり直す" title="やり直す">↷</button>
+      <button id="btnDelete" aria-label="消す" title="消す">⌫</button>
     </div>
     <div id="toolNotes" class="face"></div>
     <div id="toolSigns" class="face" hidden></div>
