@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>ピアノ譜せん</title>
+<style>
+  :root { --accent:#1d6fd6; --accent-bg:#e3eefc; --warn-bg:#fff3b0; --line:#d5d5d5; --text:#222; --muted:#666; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { margin:0; height:100%; font-family: system-ui, -apple-system, "Hiragino Sans", "Yu Gothic UI", sans-serif; color:var(--text); background:#fafafa; }
+  body { display:flex; flex-direction:column; height:100dvh; overflow:hidden; }
+  button { font: inherit; min-height:44px; min-width:44px; border:1px solid var(--line); background:#fff; border-radius:8px; padding:0 10px; color:var(--text); }
+  button.on { background:var(--accent-bg); border-color:var(--accent); color:var(--accent); font-weight:600; }
+  #topbar, #infobar { display:flex; align-items:center; gap:8px; padding:6px 8px; background:#fff; border-bottom:1px solid var(--line); }
+  #infobar { flex-wrap:wrap; }
+  #infobar select { font:inherit; min-height:40px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+  #scoreTitle { flex:1; text-align:center; font-weight:600; font-size:16px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #infoMeta { flex:1; color:var(--muted); font-size:13px; }
+  #scoreWrap { flex:1; overflow:auto; background:#fff; position:relative; }
+  #score svg { display:block; }
+  #toolbar { background:#f3f3f3; border-top:1px solid var(--line); padding:6px 8px; }
+  .face { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+  .face[hidden] { display:none; }
+  .faceTabs { display:flex; gap:6px; margin-bottom:6px; }
+  .spacer { flex:1; }
+  #keyboard { height:150px; background:#fff; border-top:1px solid var(--line); position:relative; overflow-x:auto; overflow-y:hidden; }
+  #printArea { display:none; }
+  #toast { position:fixed; left:50%; top:8px; transform:translateX(-50%); background:#c62828; color:#fff; padding:8px 14px; border-radius:8px; font-size:14px; display:none; z-index:50; }
+  #toast.info { background:#333; }
+  dialog { border:1px solid var(--line); border-radius:12px; padding:16px; width:min(92vw, 420px); font-size:15px; }
+  dialog::backdrop { background:rgba(0,0,0,.35); }
+  dialog h2 { margin:0 0 12px; font-size:17px; }
+  dialog label { display:flex; align-items:center; gap:8px; margin:10px 0; }
+  dialog input[type=text], dialog input[type=number], dialog select { flex:1; font:inherit; min-height:40px; padding:4px 8px; border:1px solid var(--line); border-radius:6px; }
+  .dlgBtns { display:flex; justify-content:flex-end; gap:8px; margin-top:14px; }
+  .listItem { display:flex; align-items:center; gap:8px; padding:8px 0; border-bottom:1px solid var(--line); }
+  .listItem .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .listItem .date { color:var(--muted); font-size:12px; }
+  .listItem.current .name { color:var(--accent); font-weight:600; }
+  @media print {
+    body > * { display:none !important; }
+    #printArea { display:block !important; }
+    @page { size: 210mm 297mm; margin: 0; }
+    .print-page { width:210mm; height:297mm; padding:15mm; page-break-after:always; break-after:page; background:#fff; }
+    .print-page:last-child { page-break-after:auto; break-after:auto; }
+    .print-head { text-align:center; margin-bottom:6mm; }
+    .print-head h1 { font-size:20pt; margin:0 0 2mm; font-weight:600; }
+    .print-head .sub { font-size:10pt; color:#333; }
+    .print-head .tempo { text-align:left; font-size:10pt; margin-top:3mm; }
+    * { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+  <div id="topbar">
+    <button id="btnList" aria-label="曲一覧">☰ 曲一覧</button>
+    <div id="scoreTitle">新しい曲</div>
+    <button id="btnSettings" aria-label="曲の設定">⚙ 設定</button>
+  </div>
+  <div id="infobar">
+    <div id="infoMeta">4/4拍子 ・ ハ長調 ・ ♩=90</div>
+    <select id="playHands" aria-label="鳴らす手"><option value="RL">両手</option><option value="R">右手</option><option value="L">左手</option></select>
+    <input id="playBpm" type="range" min="40" max="200" step="1" aria-label="再生テンポ" style="width:80px">
+    <button id="btnPlay">▶ 再生</button>
+    <button id="btnStop" hidden>■ 停止</button>
+    <button id="btnPrint">🖨 印刷</button>
+  </div>
+  <div id="scoreWrap"><div id="score"></div></div>
+  <div id="toolbar">
+    <div class="faceTabs">
+      <button id="btnFaceNotes" class="on">音符</button>
+      <button id="btnFaceSigns">記号</button>
+      <span class="spacer"></span>
+      <button id="btnUndo" title="戻す">↶ 戻す</button>
+      <button id="btnRedo" title="やり直す">↷</button>
+      <button id="btnDelete">⌫ 消す</button>
+    </div>
+    <div id="toolNotes" class="face"></div>
+    <div id="toolSigns" class="face" hidden></div>
+  </div>
+  <div id="keyboard"></div>
+  <div id="printArea"></div>
+  <div id="toast"></div>
+  <dialog id="dlgSettings">
+    <form method="dialog">
+      <h2>曲の設定</h2>
+      <label>曲名 <input id="fTitle" type="text" maxlength="60" required></label>
+      <label>作曲者 <input id="fComposer" type="text" maxlength="60"></label>
+      <label>テンポ ♩= <input id="fBpm" type="number" min="30" max="240" step="1"></label>
+      <label>拍子 <select id="fTimeSig"></select></label>
+      <label>調 <select id="fKeySig"></select></label>
+      <label><input id="fDoremiScreen" type="checkbox"> 画面にドレミを出す</label>
+      <label><input id="fDoremiPrint" type="checkbox"> 印刷にドレミを出す</label>
+      <div class="dlgBtns"><button id="btnSettingsCancel" type="button">キャンセル</button><button id="btnSettingsOk" value="ok">決定</button></div>
+    </form>
+  </dialog>
+  <dialog id="dlgList">
+    <h2>曲一覧</h2>
+    <div id="listItems"></div>
+    <div class="dlgBtns"><button id="btnNewScore">＋ 新しい曲</button><button id="btnListClose">閉じる</button></div>
+  </dialog>
+  <script src="vendor/vexflow.js"></script>
+  <script src="js/model.js"></script>
+  <script src="js/storage.js"></script>
+  <script src="js/render.js"></script>
+  <script src="js/playback.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
