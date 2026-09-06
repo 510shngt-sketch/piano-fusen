@@ -274,16 +274,117 @@ function splitGapToRests(ticks) {
   }
   return out;
 }
-// Basic Pitch の生の認識結果を掃除する: 範囲外・小さすぎる/短すぎる音を捨て、同音の近接重複をまとめ、再検出を間引く
-var DEFAULT_CLEAN_OPTS = { minAmp: 0.3, minDur: 0.06, minMidi: 21, maxMidi: 108, mergeWindow: 0.05 };
+// 録音した生PCMの前処理: DC(平均)を除き、一次ハイパス(カットオフ約30Hz@22050)を掛け、
+// ピークを0.9へ正規化する(電子ピアノのスピーカー越しの録音などで入力レベルが低い場合の対策)。
+// ピークが1e-4未満(ほぼ無音)なら正規化はしない。入力は変更せず、常に新しい Float32Array を返す
+function preprocessPcm(f32) {
+  var n = f32.length;
+  var out = new Float32Array(n);
+  if (n === 0) return out;
+  var mean = 0;
+  for (var i = 0; i < n; i++) mean += f32[i];
+  mean /= n;
+  var prevX = 0, prevY = 0;
+  for (var j = 0; j < n; j++) {
+    var x = f32[j] - mean;
+    var y = x - prevX + 0.9915 * prevY;
+    out[j] = y;
+    prevX = x; prevY = y;
+  }
+  var peak = 0;
+  for (var k = 0; k < n; k++) { var a = Math.abs(out[k]); if (a > peak) peak = a; }
+  if (peak >= 1e-4) {
+    var gain = 0.9 / peak;
+    for (var m = 0; m < n; m++) out[m] *= gain;
+  }
+  return out;
+}
+
+// サンプルレート変換。間引き(fromRate > toRate)は箱型フィルタ(区間平均)でエイリアシングを抑え、
+// 引き伸ばし・同レート(fromRate <= toRate)は線形補間で行う
+function resamplePcm(input, fromRate, toRate) {
+  var outLen = Math.max(0, Math.floor(input.length * toRate / fromRate));
+  var out = new Float32Array(outLen);
+  if (outLen === 0) return out;
+  if (fromRate <= toRate) {
+    var ratio = fromRate / toRate;
+    for (var i = 0; i < outLen; i++) {
+      var srcPos = i * ratio;
+      var idx = Math.floor(srcPos);
+      var frac = srcPos - idx;
+      var a = idx < input.length ? input[idx] : 0;
+      var b = (idx + 1) < input.length ? input[idx + 1] : a;
+      out[i] = a + (b - a) * frac;
+    }
+  } else {
+    var r = fromRate / toRate;
+    for (var j = 0; j < outLen; j++) {
+      var lo = Math.max(0, Math.round(j * r - r / 2));
+      var hi = Math.min(input.length, Math.round(j * r + r / 2));
+      if (hi <= lo) hi = Math.min(input.length, lo + 1);
+      var sum = 0, count = 0;
+      for (var k = lo; k < hi; k++) { sum += input[k]; count++; }
+      out[j] = count > 0 ? sum / count : 0;
+    }
+  }
+  return out;
+}
+
+// 16bit PCM モノラルの WAV(RIFF)にエンコードする。値は[-1,1]にクリップして四捨五入
+function encodeWav(f32, sampleRate) {
+  var numSamples = f32.length;
+  var blockAlign = 2;
+  var byteRate = sampleRate * blockAlign;
+  var dataSize = numSamples * 2;
+  var buffer = new ArrayBuffer(44 + dataSize);
+  var view = new DataView(buffer);
+  function writeString(offset, str) {
+    for (var i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  }
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 16, true);
+  writeString(36, "data");
+  view.setUint32(40, dataSize, true);
+  var offset = 44;
+  for (var n = 0; n < numSamples; n++) {
+    var s = f32[n];
+    if (s > 1) s = 1; else if (s < -1) s = -1;
+    view.setInt16(offset, Math.round(s * 32767), true);
+    offset += 2;
+  }
+  return new Uint8Array(buffer);
+}
+
+// Basic Pitch の生の認識結果を掃除する: 範囲外・小さすぎる/短すぎる音を捨て、同音の近接重複をまとめ、再検出を間引き、
+// 相対的に小さい音・倍音・単音制約(任意)を取り除く
+var HARMONIC_SEMITONES = [12, 19, 24, 28, 31, 36];
+var DEFAULT_CLEAN_OPTS = {
+  minAmp: 0.12, minDur: 0.06, minMidi: 21, maxMidi: 108, mergeWindow: 0.05,
+  relAmp: 0.25, mono: false, monoWindow: 0.08, harmonics: null   // harmonics: null = mono と同じ(単音モードのときだけ倍音除去)
+};
 function cleanRecognizedNotes(raw, opts) {
   var o = {
     minAmp: (opts && opts.minAmp != null) ? opts.minAmp : DEFAULT_CLEAN_OPTS.minAmp,
     minDur: (opts && opts.minDur != null) ? opts.minDur : DEFAULT_CLEAN_OPTS.minDur,
     minMidi: (opts && opts.minMidi != null) ? opts.minMidi : DEFAULT_CLEAN_OPTS.minMidi,
     maxMidi: (opts && opts.maxMidi != null) ? opts.maxMidi : DEFAULT_CLEAN_OPTS.maxMidi,
-    mergeWindow: (opts && opts.mergeWindow != null) ? opts.mergeWindow : DEFAULT_CLEAN_OPTS.mergeWindow
+    mergeWindow: (opts && opts.mergeWindow != null) ? opts.mergeWindow : DEFAULT_CLEAN_OPTS.mergeWindow,
+    relAmp: (opts && opts.relAmp != null) ? opts.relAmp : DEFAULT_CLEAN_OPTS.relAmp,
+    mono: (opts && opts.mono != null) ? opts.mono : DEFAULT_CLEAN_OPTS.mono,
+    monoWindow: (opts && opts.monoWindow != null) ? opts.monoWindow : DEFAULT_CLEAN_OPTS.monoWindow,
+    harmonics: (opts && opts.harmonics != null) ? opts.harmonics : DEFAULT_CLEAN_OPTS.harmonics
   };
+  // 倍音除去は既定では単音モードのときだけ。和音を拾うモードではオクターブ重ねなど本物の音を消しかねないため
+  if (o.harmonics == null) o.harmonics = !!o.mono;
   // (1) 範囲外・小さすぎる・短すぎるものを捨てる(入力は複製して読み取るだけ、mutateしない)
   // pitchMidi(Basic Pitchの通常出力)/pitch_midi(adjustNoteStart後の出力)のどちらでも受け付ける
   var kept = (raw || []).map(function (n) {
@@ -296,11 +397,11 @@ function cleanRecognizedNotes(raw, opts) {
       n.amplitude >= o.minAmp && n.dur >= o.minDur &&
       n.midi >= o.minMidi && n.midi <= o.maxMidi;
   // 以降の同一判定はすべて丸めた音高で行う(59.6と60.4を同じ音として扱う)
-  }).map(function (n) { return { start: n.start, dur: n.dur, midi: Math.round(n.midi) }; });
+  }).map(function (n) { return { start: n.start, dur: n.dur, midi: Math.round(n.midi), amplitude: n.amplitude }; });
   kept.sort(function (a, b) { return a.start - b.start || a.midi - b.midi; });
 
   // (2) 同じ midi で開始が mergeWindow 以内のものは連鎖的に1つにまとめる
-  // (代表の開始は連鎖の先頭(最初の開始)のまま、長さは連鎖内の最大を採用。
+  // (代表の開始は連鎖の先頭(最初の開始)のまま、長さ・振幅は連鎖内の最大を採用。
   //  比較は代表の開始ではなく「連鎖内で直前に取り込んだ生ノートの開始」に対して行うことで、
   //  0.00/0.03/0.06 のように少しずつ離れた3個以上の検出も推移的に1つへまとめる)
   var merged = [];
@@ -310,10 +411,11 @@ function cleanRecognizedNotes(raw, opts) {
     if (idx !== undefined && Math.abs(merged[idx].chainLastStart - n.start) <= o.mergeWindow) {
       var m = merged[idx];
       if (n.dur > m.dur) m.dur = n.dur;
+      if (n.amplitude > m.amplitude) m.amplitude = n.amplitude;
       m.chainLastStart = n.start;
       return;
     }
-    merged.push({ start: n.start, dur: n.dur, midi: n.midi, chainLastStart: n.start });
+    merged.push({ start: n.start, dur: n.dur, midi: n.midi, amplitude: n.amplitude, chainLastStart: n.start });
     lastIndexByMidi[n.midi] = merged.length - 1;
   });
   merged.sort(function (a, b) { return a.start - b.start || a.midi - b.midi; });
@@ -330,7 +432,61 @@ function cleanRecognizedNotes(raw, opts) {
     if (!isRedetection) result.push(n);
   });
 
-  // (4) onsetSec 昇順に並べ、{midi, onsetSec, durSec} に整形
+  // (3.5) 録音内の最大振幅 × relAmp 未満の音を捨てる(倍音・雑音の残りかすの誤検出対策)
+  if (result.length) {
+    var maxAmp = result.reduce(function (mx, n) { return n.amplitude > mx ? n.amplitude : mx; }, 0);
+    var relThreshold = maxAmp * o.relAmp;
+    result = result.filter(function (n) { return n.amplitude >= relThreshold; });
+  }
+
+  // (4) 倍音除去: monoWindow以内に始まる、より低くて大きい音があり、半音差が倍音間隔(1,1.5,2,2.5オクターブ等)で、
+  // 自分の振幅がその音の0.7倍未満なら、倍音による誤検出とみなして捨てる
+  if (o.harmonics) {
+    result = result.filter(function (n) {
+      var isHarmonic = result.some(function (k) {
+        if (k === n) return false;
+        if (k.midi >= n.midi) return false;
+        if (k.amplitude <= n.amplitude) return false;
+        if (Math.abs(k.start - n.start) > o.monoWindow) return false;
+        if (HARMONIC_SEMITONES.indexOf(n.midi - k.midi) === -1) return false;
+        return n.amplitude < 0.7 * k.amplitude;
+      });
+      return !isHarmonic;
+    });
+  }
+
+  // (5) 単音制約: 開始が monoWindow 以内の音の群ごとに、群内の最大振幅(groupMax)の 0.65倍以上の
+  // 音だけを候補にし、その中で一番高い音を残す(同着は振幅が大きい方)。
+  // メロディは上の声部にあることが多く、Basic Pitch の振幅は音量に比例しないため、単純な最大振幅採用だと
+  // 音量の大きい低音(和音のベースなど)にメロディの音が負けてしまう。さらに各音の長さを
+  // 「次に残った音の開始まで」に切りそろえる(重なりを消す)
+  if (o.mono) {
+    result.sort(function (a, b) { return a.start - b.start || a.midi - b.midi; });
+    var groups = [];
+    result.forEach(function (n) {
+      var g = groups[groups.length - 1];
+      if (g && (n.start - g[0].start) <= o.monoWindow) g.push(n);
+      else groups.push([n]);
+    });
+    var picked = groups.map(function (g) {
+      var groupMax = g.reduce(function (mx, n) { return n.amplitude > mx ? n.amplitude : mx; }, 0);
+      var threshold = 0.65 * groupMax;
+      var candidates = g.filter(function (n) { return n.amplitude >= threshold; });
+      var best = candidates[0];
+      candidates.forEach(function (n) {
+        if (n.midi > best.midi || (n.midi === best.midi && n.amplitude > best.amplitude)) best = n;
+      });
+      return best;
+    });
+    picked.sort(function (a, b) { return a.start - b.start || a.midi - b.midi; });
+    for (var p = 0; p < picked.length - 1; p++) {
+      var gap = picked[p + 1].start - picked[p].start;
+      if (gap > 0) picked[p].dur = Math.min(picked[p].dur, gap);
+    }
+    result = picked;
+  }
+
+  // (6) onsetSec 昇順に並べ、{midi, onsetSec, durSec} に整形
   result.sort(function (a, b) { return a.start - b.start || a.midi - b.midi; });
   // (1)の kept で既に丸め済みなので、ここでは再度 Math.round しない
   return result.map(function (n) { return { midi: n.midi, onsetSec: n.start, durSec: n.dur }; });
@@ -453,6 +609,7 @@ if (typeof module !== "undefined") module.exports = {
   eventById: eventById, pruneReferences: pruneReferences, fixTuplets: fixTuplets, fixGraces: fixGraces,
   reissueEventIds: reissueEventIds,
   measureIndexOf: measureIndexOf, playbackMeasureOrder: playbackMeasureOrder,
-  importPerformance: importPerformance, cleanRecognizedNotes: cleanRecognizedNotes,
-  NON_TUPLET_DURATIONS: NON_TUPLET_DURATIONS, splitGapToRests: splitGapToRests
+  importPerformance: importPerformance, cleanRecognizedNotes: cleanRecognizedNotes, DEFAULT_CLEAN_OPTS: DEFAULT_CLEAN_OPTS,
+  NON_TUPLET_DURATIONS: NON_TUPLET_DURATIONS, splitGapToRests: splitGapToRests,
+  preprocessPcm: preprocessPcm, resamplePcm: resamplePcm, encodeWav: encodeWav
 };

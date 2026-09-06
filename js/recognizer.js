@@ -131,22 +131,6 @@ var Recognizer = {
       if (state.progressTimer != null) { clearInterval(state.progressTimer); state.progressTimer = null; }
     }
 
-    function resampleLinear(input, fromRate, toRate) {
-      if (!input.length || fromRate === toRate) return input;
-      var ratio = fromRate / toRate;
-      var outLen = Math.max(0, Math.round(input.length / ratio));
-      var out = new Float32Array(outLen);
-      for (var i = 0; i < outLen; i++) {
-        var srcPos = i * ratio;
-        var idx = Math.floor(srcPos);
-        var frac = srcPos - idx;
-        var a = idx < input.length ? input[idx] : 0;
-        var b = (idx + 1) < input.length ? input[idx + 1] : a;
-        out[i] = a + (b - a) * frac;
-      }
-      return out;
-    }
-
     function teardownAudioNodes() {
       try { if (state.workletNode) state.workletNode.disconnect(); } catch (e) {}
       try { if (state.scriptNode) state.scriptNode.disconnect(); } catch (e) {}
@@ -168,7 +152,7 @@ var Recognizer = {
       var merged = new Float32Array(total);
       var off = 0;
       state.chunks.forEach(function (c) { merged.set(c, off); off += c.length; });
-      var resampled = resampleLinear(merged, sr, 22050);
+      var resampled = resamplePcm(merged, sr, 22050);
       function done() { resolveStopPromise(resampled); }
       if (state.ctx && state.ctx.state !== "closed") {
         state.ctx.close().then(done, done);
@@ -372,17 +356,22 @@ var Recognizer = {
           if (c && c.length) Array.prototype.push.apply(contours, c);
         }
 
+        // 録音レベルが低い(電子ピアノのスピーカー越しなど)場合に備え、DC除去・ハイパス・ピーク正規化を通してから解析する
+        var pcm2 = preprocessPcm(pcm);
+        self.lastPcm = pcm2;
+
         // evaluateModel は推論の中間テンソルを大量に作る。load() でモデルの重みを作った
         // 外側のスコープのまま呼ぶと、そのテンソルたちが解放されず溜まり続ける(メモリリーク)ので、
         // ここだけ専用のスコープで囲み、成功・失敗どちらの経路でも必ず閉じる
         BasicPitchLib.tf.engine().startScope();
-        self.bp.evaluateModel(pcm, onComplete, percentCallback).then(function () {
+        self.bp.evaluateModel(pcm2, onComplete, percentCallback).then(function () {
           BasicPitchLib.tf.engine().endScope();
           clearSlowTimer();
           try {
-            var notes = BasicPitchLib.outputToNotesPoly(frames, onsets, 0.5, 0.3, 5);
+            var notes = BasicPitchLib.outputToNotesPoly(frames, onsets, 0.4, 0.25, 4);
             notes = BasicPitchLib.addPitchBendsToNoteEvents(contours, notes);
             notes = BasicPitchLib.noteFramesToTime(notes);
+            self.lastRaw = notes;
             resolve(notes);
           } catch (err) {
             reject(new Error("解析に失敗しました"));
@@ -396,10 +385,10 @@ var Recognizer = {
     });
   },
 
-  // 整形済み(cleanRecognizedNotes 適用後)の検出結果
-  analyze: function (pcm, onProgress) {
-    return this.analyzeRaw(pcm, onProgress).then(function (notes) {
-      return cleanRecognizedNotes(notes);
+  // 整形済み(cleanRecognizedNotes 適用後)の検出結果。opts.mono で単音制約の有無を切り替える
+  analyze: function (pcm, onProgress, opts) {
+    return this.analyzeRaw(pcm, onProgress).then(function (raw) {
+      return cleanRecognizedNotes(raw, { mono: !!(opts && opts.mono) });
     });
   }
 };

@@ -157,8 +157,14 @@
         <option value="48">低いドから上を右手</option>
         <option value="0">全部右手</option>
       </select></label>
+      <label><input id="recMono" type="checkbox" checked> 単音(メロディだけ)。和音も拾うときは外す</label>
       <p style="color:var(--muted); font-size:13px; margin:10px 0 0;">カウント1小節のあとに録音が始まります。演奏が終わったら停止を押してください(最長60秒)</p>
       <div class="dlgBtns"><button id="btnRecStart">録音開始</button><button id="btnRecClose">閉じる</button></div>
+      <div class="dlgBtns">
+        <button id="btnRecReanalyze" disabled>最後の録音をもう一度下書きにする</button>
+        <button id="btnRecSaveWav" disabled>最後の録音を保存(WAV)</button>
+      </div>
+      <p style="color:var(--muted); font-size:13px; margin:6px 0 0;">保存した音を送ってもらえると、聞き取りの調整ができます</p>
     </div>
     <div data-panel="loading">
       <p id="recLoadingText">部品を読み込み中</p>

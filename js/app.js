@@ -472,6 +472,7 @@ function startRecordingFlow() {
   $("recBpm").value = s.bpm; $("recBpmVal").textContent = "♩=" + $("recBpm").value;   // スライダーの範囲(40-200)に丸まった値を表示
   $("recTimeSig").value = s.timeSig.beats + "/" + s.timeSig.unit;
   setRecordState("setup");
+  refreshRecLastButtons();
   $("dlgList").close();
   $("dlgRecord").showModal();
   // 部品(約2MB)とモデルの読み込みをここで前もって始めておく。利用者がテンポや拍子を選んでいる間に
@@ -479,12 +480,58 @@ function startRecordingFlow() {
   // loadRecognizerScript/Recognizer.load の同じキャッシュ済み Promise を使って再度待つ)
   loadRecognizerScript().then(function () { return Recognizer.load(); }).catch(function () {});
 }
-function runRecordingFlow() {
-  var bpm = Number($("recBpm").value) || 90;
+// setup 画面の現在値をまとめて読む(通常の録音・再解析の両方から使う)
+function currentRecSettings() {
   var ts = $("recTimeSig").value.split("/");
-  var beats = Number(ts[0]), unit = Number(ts[1]);
-  var grid = Number($("recGrid").value);
-  var splitMidi = Number($("recSplit").value);
+  return {
+    bpm: Number($("recBpm").value) || 90,
+    beats: Number(ts[0]), unit: Number(ts[1]),
+    grid: Number($("recGrid").value),
+    splitMidi: Number($("recSplit").value),
+    mono: $("recMono").checked
+  };
+}
+// 「最後の録音を保存(WAV)」「もう一度下書きにする」は Recognizer.lastPcm(前処理後の22050Hz PCM)が
+// あるときだけ使える。ダイアログを開いたときと、解析が一段落するたびに有効/無効を更新する
+function refreshRecLastButtons() {
+  var has = !!(window.Recognizer && Recognizer.lastPcm && Recognizer.lastPcm.length);
+  $("btnRecReanalyze").disabled = !has;
+  $("btnRecSaveWav").disabled = !has;
+}
+function recordWavName() {
+  var d = new Date();
+  return "録音_" + pad2(d.getMonth() + 1) + pad2(d.getDate()) + "_" + pad2(d.getHours()) + pad2(d.getMinutes()) + ".wav";
+}
+function saveLastRecordingWav() {
+  if (!(window.Recognizer && Recognizer.lastPcm && Recognizer.lastPcm.length)) return;
+  var wav = encodeWav(Recognizer.lastPcm, 22050);
+  downloadBlob(recordWavName(), new Blob([wav], { type: "audio/wav" }));
+}
+function reanalyzeLastRecording() {
+  if (!(window.Recognizer && Recognizer.lastPcm && Recognizer.lastPcm.length)) return;
+  finishFromPcm(Recognizer.lastPcm, currentRecSettings());
+}
+// 解析→下書き作成→保存→開く、の一連の流れ。通常の録音(停止後)と「もう一度下書きにする」の両方が使う
+function finishFromPcm(pcm, settings) {
+  setRecordState("analyzing");
+  $("recProgress").textContent = "解析中";
+  return Recognizer.analyze(pcm, function (p) {
+    $("recProgress").textContent = typeof p === "number" ? "解析中 " + Math.round(p) + "%" : p;
+  }, { mono: settings.mono }).then(function (notes) {
+    if (!notes.length) { toast("音を拾えませんでした。マイクに近づけてもう一度試してください"); setRecordState("setup"); return; }
+    var newS = importPerformance(notes, { bpm: settings.bpm, timeSig: { beats: settings.beats, unit: settings.unit },
+      grid: settings.grid, splitMidi: settings.splitMidi, title: "下書き " + recordTitleStamp() });
+    if (!saveScore(newS)) { toast("保存できませんでした(端末の保存領域が足りません)"); }
+    openScoreObject(newS);
+    $("dlgRecord").close();
+    toast("下書きができました。間違いは鍵盤で直せます", true);
+  }).catch(function (e) {
+    if (e && e.name === "AbortError") { toast("取り消しました", true); } else { toast((e && e.message) || "解析に失敗しました"); }
+    setRecordState("setup");
+  }).finally(function () { refreshRecLastButtons(); });
+}
+function runRecordingFlow() {
+  var settings = currentRecSettings();
 
   recLoadAbortRequested = false;
   setRecordState("loading");
@@ -497,7 +544,7 @@ function runRecordingFlow() {
     return new Promise(function (resolve) {
       var settled = false;
       var rec = Recognizer.record({
-        bpm: bpm, beats: beats, unit: unit, maxSec: 60,
+        bpm: settings.bpm, beats: settings.beats, unit: settings.unit, maxSec: 60,
         onCount: function (n) { setRecordState("count"); $("recCount").textContent = n; },
         onRecording: function (sec, rms) {
           setRecordState("recording");
@@ -528,17 +575,7 @@ function runRecordingFlow() {
   }).then(function (pcm) {
     if (pcm == null) return null; // ready の失敗で既に setup に戻し済み
     if (pcm.length < 22050 * 0.5) { toast("録音が短すぎます"); setRecordState("setup"); return null; }
-    return Recognizer.analyze(pcm, function (p) {
-      $("recProgress").textContent = typeof p === "number" ? "解析中 " + Math.round(p) + "%" : p;
-    }).then(function (notes) {
-      if (!notes.length) { toast("音を拾えませんでした。マイクに近づけてもう一度試してください"); setRecordState("setup"); return; }
-      var newS = importPerformance(notes, { bpm: bpm, timeSig: { beats: beats, unit: unit }, grid: grid, splitMidi: splitMidi,
-        title: "下書き " + recordTitleStamp() });
-      if (!saveScore(newS)) { toast("保存できませんでした(端末の保存領域が足りません)"); }
-      openScoreObject(newS);
-      $("dlgRecord").close();
-      toast("下書きができました。間違いは鍵盤で直せます", true);
-    });
+    return finishFromPcm(pcm, settings);
   }).catch(function (e) {
     if (e && e.name === "AbortError") { toast("取り消しました", true); } else { toast((e && e.message) || "解析に失敗しました"); }
     setRecordState("setup");
@@ -552,6 +589,8 @@ function buildRecordDialog() {
   $("recBpm").oninput = function () { $("recBpmVal").textContent = "♩=" + $("recBpm").value; };
   $("btnRecClose").onclick = function () { $("dlgRecord").close(); };
   $("btnRecStart").onclick = runRecordingFlow;
+  $("btnRecReanalyze").onclick = reanalyzeLastRecording;
+  $("btnRecSaveWav").onclick = saveLastRecordingWav;
   $("btnRecStop").onclick = function () { if (activeRecStop) activeRecStop(); };
   // 「部品を読み込み中」の中止: フラグを立てて画面だけ先に戻す(読み込みが終わった時点でも記録がやり直されない)
   $("btnRecAbortLoad").onclick = function () { recLoadAbortRequested = true; setRecordState("setup"); };
@@ -572,13 +611,16 @@ function buildRecordDialog() {
 function safeName(title) { return String(title || "").replace(/[\\/:*?"<>|]/g, "_").replace(/^\.+|\.+$/g, ""); }
 function pad2(n) { return n < 10 ? "0" + n : "" + n; }
 function todayYyyymmdd() { var d = new Date(); return "" + d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate()); }
-function downloadText(name, text) {
+function downloadBlob(name, blob) {
   var a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+  a.href = URL.createObjectURL(blob);
   a.download = name;
   document.body.appendChild(a);
   a.click();
   setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+function downloadText(name, text) {
+  downloadBlob(name, new Blob([text], { type: "application/json" }));
 }
 function showShareUrlBox(url) {
   var box = $("shareUrlBox");
