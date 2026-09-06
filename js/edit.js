@@ -175,7 +175,9 @@ function select(id) {
   state.selectedId = id;
   state.chordAnchorId = null;
   if (id) {
-    var ev = findEvent(id); state.hand = ev.hand;
+    var ev = findEvent(id);
+    if (ev.hand !== state.hand) { repairAbandonedTuplet(); clearModes(); }
+    state.hand = ev.hand;
     state.cursor[ev.hand] = handEvents(state.score, ev.hand).indexOf(ev) + 1;
   }
   render();
@@ -268,6 +270,19 @@ function toggleTie() {
   mutate(function () { sel.tie = !sel.tie; });
 }
 function moveCursorToEnd() { state.selectedId = null; state.chordAnchorId = null; state.cursor[state.hand] = handEvents(state.score, state.hand).length; render(); scrollToCursor(); }
+// 選択中の音符の「前」にカーソルを合わせる(その手に切り替え、選択解除)。楽譜そのものは変えないので undo は積まない
+function insertBefore() {
+  var sel = state.selectedId ? findEvent(state.selectedId) : null;
+  if (!sel) { toast("先に音符をタップして選んでください", true); return; }
+  var hadPending = !!state.pending;
+  if (sel.hand !== state.hand) { repairAbandonedTuplet(); clearModes(); }
+  state.hand = sel.hand;
+  state.cursor[sel.hand] = handEvents(state.score, sel.hand).indexOf(sel);
+  state.selectedId = null; state.chordAnchorId = null; state.pending = null;
+  render();
+  if (hadPending) toast("取り消しました", true);
+  toast("ここに挿入します。鍵盤を押すと、選んだ音符の前に入ります", true);
+}
 function undo() {
   if (!state.history.length) return;
   state.future.push(JSON.stringify(state.score));

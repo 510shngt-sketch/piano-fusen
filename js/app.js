@@ -98,12 +98,16 @@ function buildToolbar() {
   mk("btnRest", "rest", "休符", function () { setRestMode(true); });
   mk("btnChord", "chord", "和音", function () { setChordMode(!state.chordMode); });
 
-  // 1段目: [音符][記号][右手/左手] spacer [末尾へ][戻す][やり直す][消す]
-  var spacer = document.querySelector(".faceTabs .spacer");
+  // 1段目: [音符][記号][右手/左手][再生][停止] spacer [挿入][末尾へ][戻す][やり直す][消す]
   var btnHand = document.createElement("button"); btnHand.id = "btnHand";
   btnHand.setAttribute("aria-label", "右手/左手を切り替え"); btnHand.title = "右手/左手を切り替え";
   btnHand.onclick = function () { toggleHand(); };
-  spacer.parentNode.insertBefore(btnHand, spacer);
+  $("btnPlay").parentNode.insertBefore(btnHand, $("btnPlay"));
+
+  var btnInsert = document.createElement("button"); btnInsert.id = "btnInsert"; btnInsert.textContent = "⇤";
+  btnInsert.setAttribute("aria-label", "ここに挿入(選んだ音符の前)"); btnInsert.title = "ここに挿入(選んだ音符の前)";
+  btnInsert.onclick = function () { insertBefore(); };
+  $("btnUndo").parentNode.insertBefore(btnInsert, $("btnUndo"));
 
   var btnToEnd = document.createElement("button"); btnToEnd.id = "btnToEnd"; btnToEnd.textContent = "⇥";
   btnToEnd.setAttribute("aria-label", "末尾へ"); btnToEnd.title = "末尾へ";
@@ -135,17 +139,61 @@ function buildKeyboard() {
     }
   });
   kb.appendChild(inner);
-  var down = function (e) {
-    var t = e.target.closest("[data-midi]"); if (!t) return;
-    t.style.filter = "brightness(0.8)";
-    addNote(Number(t.dataset.midi));
-    setTimeout(function () { t.style.filter = ""; }, 120);
+
+  // 誤入力防止: 押した指がそのまま同じ鍵の上で離れたときだけ addNote する。
+  // スクロールで指が動いた場合(8px以上)は取り消し、押下色も戻す。
+  var press = null; // {midi, el, x, y, pointerId}
+  var clearPress = function () {
+    if (press && press.el) press.el.style.filter = "";
+    press = null;
   };
-  kb.addEventListener("pointerdown", down);
+  kb.addEventListener("pointerdown", function (e) {
+    var t = e.target.closest("[data-midi]"); if (!t) return;
+    if (press) return; // 複数指の同時タッチは最初の1つだけ扱う
+    press = { midi: Number(t.dataset.midi), el: t, x: e.clientX, y: e.clientY, pointerId: e.pointerId };
+    t.style.filter = "brightness(0.8)";
+  });
+  kb.addEventListener("pointermove", function (e) {
+    if (!press || e.pointerId !== press.pointerId) return;
+    var dx = e.clientX - press.x, dy = e.clientY - press.y;
+    if (Math.sqrt(dx * dx + dy * dy) >= 8) clearPress();
+  });
+  kb.addEventListener("pointerup", function (e) {
+    if (!press || e.pointerId !== press.pointerId) return;
+    var dx = e.clientX - press.x, dy = e.clientY - press.y;
+    var moved = Math.sqrt(dx * dx + dy * dy) >= 8;
+    var stillOnKey = false;
+    if (!moved) {
+      var el = document.elementFromPoint(e.clientX, e.clientY);
+      var t = el && el.closest && el.closest("[data-midi]");
+      stillOnKey = !!t && t === press.el;
+    }
+    var midi = press.midi;
+    clearPress();
+    if (!moved && stillOnKey) addNote(midi);
+  });
+  kb.addEventListener("pointercancel", function (e) {
+    if (press && e.pointerId === press.pointerId) clearPress();
+  });
+  kb.addEventListener("pointerleave", function (e) {
+    if (press && e.pointerId === press.pointerId) clearPress();
+  });
 }
 function scrollKeyboardTo(midi) {
   var kb = $("keyboard"), el = kb.querySelector('[data-midi="' + midi + '"]'); if (!el) return;
   kb.scrollLeft = Math.max(0, el.offsetLeft - KEY_W * 2);
+}
+
+// ---- 上段(曲一覧・設定行)の折りたたみ ----
+function toggleBars(hidden) {
+  if (hidden === undefined) hidden = !document.body.classList.contains("barsHidden");
+  document.body.classList.toggle("barsHidden", hidden);
+  var b = $("btnBars"); b.textContent = hidden ? "﹀" : "︿"; b.setAttribute("aria-label", hidden ? "上のメニューを出す" : "上のメニューを隠す"); b.title = b.getAttribute("aria-label");
+  render();
+}
+function applyBarsDefault() {
+  var hidden = window.innerHeight <= 520;
+  if (hidden !== document.body.classList.contains("barsHidden")) toggleBars(hidden);
 }
 
 // ---- 再生 ----
@@ -193,6 +241,9 @@ function boot() {
   if (!s) { s = newScore(); saveScore(s); }
   openScoreObject(s);
   scrollKeyboardTo(60);
+  $("btnBars").onclick = function () { toggleBars(); };
+  applyBarsDefault();
+  var lastShort = window.innerHeight <= 520;
   var resizeTimer = null;
   window.addEventListener("resize", function () {
     clearTimeout(resizeTimer);
@@ -200,8 +251,13 @@ function boot() {
       render();
       // 再生中はハイライトが古い幅のまま描かれた譜面に残るので、次のtickで必ず描き直させる
       if (Player.playing) playState.lastKey = "";
+      var nowShort = window.innerHeight <= 520;
+      if (nowShort !== lastShort) { lastShort = nowShort; applyBarsDefault(); }
     }, 120);
   });
+  // 向きの変化は resize が飛ばない環境もあるので、メディアクエリの変化でも初期値を再適用する
+  var shortMq = window.matchMedia("(max-height: 520px)");
+  if (shortMq && shortMq.addEventListener) shortMq.addEventListener("change", function (e) { lastShort = e.matches; applyBarsDefault(); });
 }
 function loadSample() {
   return fetch("dev/sample-kirakira.json").then(function (r) { return r.json(); }).then(function (j) {
@@ -332,10 +388,10 @@ window.App = {
   get score() { return state.score; }, state: state,
   addNote: addNote, addRest: addRest, setDuration: setDuration, setDotted: setDotted, setHand: setHand,
   setChordMode: setChordMode, setRestMode: setRestMode, render: render, saveNow: saveNow, loadSample: loadSample, resetForTest: resetForTest,
-  select: select, deleteSelected: deleteSelected, setAccidental: setAccidental, toggleTie: toggleTie, moveCursorToEnd: moveCursorToEnd, undo: undo, redo: redo,
+  select: select, deleteSelected: deleteSelected, setAccidental: setAccidental, toggleTie: toggleTie, moveCursorToEnd: moveCursorToEnd, insertBefore: insertBefore, undo: undo, redo: redo,
   updateSettings: updateSettings, newScoreAction: newScoreAction, openScore: openScore, duplicateScore: duplicateScore, deleteScore: deleteScore, listScores: listScores,
   play: play, stop: stop, preparePrint: preparePrint, printNow: printNow,
   setTupletMode: setTupletMode, setGraceMode: setGraceMode, startSlur: startSlur, startPedal: startPedal,
-  setDynamic: setDynamic, setRepeat: setRepeat, clearRepeat: clearRepeat, toggleHand: toggleHand
+  setDynamic: setDynamic, setRepeat: setRepeat, clearRepeat: clearRepeat, toggleHand: toggleHand, toggleBars: toggleBars
 };
 document.addEventListener("DOMContentLoaded", boot);
