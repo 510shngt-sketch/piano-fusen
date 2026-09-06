@@ -28,30 +28,41 @@ var Synth = {
   }
 };
 
-// 楽譜 → 鳴らす音の列。hands: "RL" | "R" | "L"。タイでつながった同じ音は1音にまとめる
+// 楽譜 → 鳴らす音の列。hands: "RL" | "R" | "L"。tick は再生時間軸(反復を展開した順)。
+// タイでつながった同じ音は1音にまとめる(反復の継ぎ目はまたがない)。装飾音は主音の直前に短く鳴らす
 function expandForPlayback(score, hands) {
   hands = hands || "RL";
+  var measures = deriveMeasures(score), order = playbackMeasureOrder(score), mt = measureTicks(score.timeSig);
   var out = [];
   ["R", "L"].forEach(function (hand) {
     if (hands.indexOf(hand) < 0) return;
-    var evs = handEvents(score, hand);
-    var carried = {};  // midi -> まだ鳴っている out の要素(タイ継続中)
-    evs.forEach(function (ev) {
-      var next = {};
-      if (!ev.rest) ev.notes.forEach(function (n) {
-        if (carried[n.midi]) { carried[n.midi].dur += ev.dur; if (ev.tie) next[n.midi] = carried[n.midi]; return; }
-        var item = { tick: ev.tick, dur: ev.dur, midi: n.midi, eventId: ev.id, hand: hand };
-        out.push(item);
-        if (ev.tie) next[n.midi] = item;
-      });
-      carried = next;
+    var carried = {};
+    order.forEach(function (mi, pos) {
+      var mea = measures[mi], evs = mea[hand], measureOffset = pos * mt;
+      var prevMi = pos > 0 ? order[pos - 1] : -1;
+      if (prevMi !== mi - 1) carried = {};                       // 反復の継ぎ目ではタイをまたがない
+      for (var i = 0; i < evs.length; i++) {
+        var ev = evs[i], t = measureOffset + (ev.tick - mea.startTick), next = {};
+        if (ev.grace) {
+          var gt = Math.max(measureOffset, t - 12);
+          if (!ev.rest) ev.notes.forEach(function (n) { out.push({ tick: gt, dur: 12, midi: n.midi, eventId: ev.id, hand: hand }); });
+          continue;
+        }
+        if (!ev.rest) ev.notes.forEach(function (n) {
+          if (carried[n.midi]) { carried[n.midi].dur += ev.dur; if (ev.tie) next[n.midi] = carried[n.midi]; return; }
+          var item = { tick: t, dur: ev.dur, midi: n.midi, eventId: ev.id, hand: hand };
+          out.push(item);
+          if (ev.tie) next[n.midi] = item;
+        });
+        carried = next;
+      }
     });
   });
   out.sort(function (a, b) { return a.tick - b.tick || a.midi - b.midi; });
   return out;
 }
 var Player = {
-  playing: false, timer: null, voices: [],
+  playing: false, timer: null, voices: [], ending: false, endTimer: null,
   start: function (score, opts) {
     this.stop();
     var ctx = Synth.ensure();
@@ -65,13 +76,20 @@ var Player = {
     this.playing = true;
     this.timer = setInterval(function () {
       var tick = (ctx.currentTime - start) / spt;
-      if (tick >= total) { self.stop(); if (opts.onEnd) opts.onEnd(); return; }
+      if (tick >= total) {
+        clearInterval(self.timer); self.timer = null;
+        self.ending = true;
+        self.endTimer = setTimeout(function () { self.stop(); if (opts.onEnd) opts.onEnd(); }, 300);
+        return;
+      }
       if (opts.onTick) opts.onTick(Math.max(0, Math.floor(tick)));
     }, 50);
-    return true;
+    return list;
   },
   stop: function () {
     clearInterval(this.timer); this.timer = null;
+    if (this.endTimer) { clearTimeout(this.endTimer); this.endTimer = null; }
+    this.ending = false;
     this.voices.forEach(function (v) { if (v && v.stop) v.stop(); }); this.voices = [];
     this.playing = false;
   }

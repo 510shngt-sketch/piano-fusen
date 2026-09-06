@@ -23,7 +23,7 @@ function emptyRestNote(hand) {
   return n;
 }
 
-function buildNote(ev, score, opts) {
+function buildNote(ev, score, opts, graceEvents) {
   var clef = ev.hand === "R" ? "treble" : "bass";
   var info = durationInfo(ev.dur);
   if (!info) return null;
@@ -40,9 +40,24 @@ function buildNote(ev, score, opts) {
     }
   }
   if (info.dots) VF.Dot.buildAndAttach([note], { all: true });
+  if (graceEvents && graceEvents.length) {
+    var gns = graceEvents.map(function (g) {
+      var gkeys = g.notes.slice().sort(function (a, b) { return a.midi - b.midi; }).map(function (n) { return spellMidi(n.midi, score.keySig, n.acc).vfKey; });
+      var gn = new VF.GraceNote({ clef: clef, keys: gkeys, duration: "8", slash: true });
+      gn.setAttribute("id", g.id);
+      if (opts.selectedId === g.id) gn.setStyle({ fillStyle: COLOR.select, strokeStyle: COLOR.select });
+      return gn;
+    });
+    var group = new VF.GraceNoteGroup(gns, true);
+    if (gns.length >= 2) group.beamNotes();
+    note.addModifier(group, 0);
+    note._graceNotes = gns;    // 呼び出し側が noteById へ個々の GraceNote を登録するため
+  }
+  var dyn = score.dynamics.filter(function (d) { return d.eventId === ev.id; })[0];
+  if (dyn) note.addModifier(new VF.Annotation(dyn.text).setFont("serif", 13, "bold", "italic").setVerticalJustification(VF.Annotation.VerticalJustify.BOTTOM), 0);
   note.setAttribute("id", ev.id);
   if (opts.selectedId === ev.id) note.setStyle({ fillStyle: COLOR.select, strokeStyle: COLOR.select });
-  else if (opts.playheadTick != null && (!opts.playheadHands || opts.playheadHands.indexOf(ev.hand) >= 0) && ev.tick <= opts.playheadTick && opts.playheadTick < ev.tick + ev.dur) note.setStyle({ fillStyle: COLOR.playhead, strokeStyle: COLOR.playhead });
+  else if (opts.playheadIds && opts.playheadIds.indexOf(ev.id) >= 0) note.setStyle({ fillStyle: COLOR.playhead, strokeStyle: COLOR.playhead });
   return note;
 }
 
@@ -71,6 +86,7 @@ function drawRows(score, rows, container, opts) {
   var noteById = {}, staveOf = {}, rowOf = {};
   var ts = score.timeSig;
   var lastMeasureIndex = opts.lastMeasureIndex;
+  var bassStaveOfRow = {};
 
   rows.forEach(function (row, r) {
     var x = LAYOUT.marginX, y = LAYOUT.top + r * LAYOUT.rowHeight;
@@ -83,28 +99,57 @@ function drawRows(score, rows, container, opts) {
         if (mea.index === 0) { st.addTimeSignature(ts.beats + "/" + ts.unit); sb.addTimeSignature(ts.beats + "/" + ts.unit); }
       }
       if (mea.index === lastMeasureIndex && opts.mode === "print") { st.setEndBarType(VF.Barline.type.END); sb.setEndBarType(VF.Barline.type.END); }
+      score.repeats.forEach(function (rp) {
+        if (rp.startMeasure === mea.index) { st.setBegBarType(VF.Barline.type.REPEAT_BEGIN); sb.setBegBarType(VF.Barline.type.REPEAT_BEGIN); }
+        if (rp.endMeasure === mea.index) { st.setEndBarType(VF.Barline.type.REPEAT_END); sb.setEndBarType(VF.Barline.type.REPEAT_END); }
+      });
       if (opts.mode === "edit") {
         if (mea.warn.R) drawWarn(ctx, st, x, w);
         if (mea.warn.L) drawWarn(ctx, sb, x, w);
       }
       st.setContext(ctx).draw(); sb.setContext(ctx).draw();
+      bassStaveOfRow[r] = sb;
       if (k === 0) {
         new VF.StaveConnector(st, sb).setType(VF.StaveConnector.type.BRACE).setContext(ctx).draw();
         new VF.StaveConnector(st, sb).setType(VF.StaveConnector.type.SINGLE_LEFT).setContext(ctx).draw();
       }
-      var voices = {}, notesOf = {};
+      var voices = {}, notesOf = {}, tuplets = [];
       ["R", "L"].forEach(function (hand) {
         var evs = mea[hand];
-        var notes;
+        var notes = [], evOf = [];
         if (evs.length === 0) {
           notes = [emptyRestNote(hand)];
         } else {
-          notes = evs.map(function (ev) {
-            var n = buildNote(ev, score, opts);
-            if (n) { noteById[ev.id] = n; staveOf[ev.id] = hand === "R" ? st : sb; rowOf[ev.id] = r; }
-            return n;
-          }).filter(function (n) { return n; });
+          var pendingGrace = [];
+          evs.forEach(function (ev) {
+            if (ev.grace) { pendingGrace.push(ev); return; }
+            var n = buildNote(ev, score, opts, pendingGrace);
+            if (n) {
+              noteById[ev.id] = n; staveOf[ev.id] = hand === "R" ? st : sb; rowOf[ev.id] = r;
+              pendingGrace.forEach(function (g, i) {
+                var gn = n._graceNotes && n._graceNotes[i];
+                if (gn) { noteById[g.id] = gn; staveOf[g.id] = hand === "R" ? st : sb; rowOf[g.id] = r; }
+              });
+              notes.push(n); evOf.push(ev);
+            }
+            pendingGrace = [];
+          });
+          // 手の末尾に grace が残った場合: 普通の音符として描く
+          pendingGrace.forEach(function (g) {
+            var n = buildNote(g, score, opts, []);
+            if (n) { noteById[g.id] = n; staveOf[g.id] = hand === "R" ? st : sb; rowOf[g.id] = r; notes.push(n); evOf.push(g); }
+          });
           if (notes.length === 0) notes = [emptyRestNote(hand)];
+        }
+        // 3連符: 連続して同じ tuplet.id を持つ3つを VF.Tuplet にまとめる(format 前)
+        var i = 0;
+        while (i < evOf.length) {
+          var tid = evOf[i].tuplet && evOf[i].tuplet.id;
+          if (!tid) { i++; continue; }
+          var j = i;
+          while (j < evOf.length && evOf[j].tuplet && evOf[j].tuplet.id === tid) j++;
+          if (j - i === 3) tuplets.push(new VF.Tuplet(notes.slice(i, j), { num_notes: 3, notes_occupied: 2 }));
+          i = j;
         }
         var v = new VF.Voice({ num_beats: ts.beats, beat_value: ts.unit }).setMode(VF.Voice.Mode.SOFT).addTickables(notes);
         voices[hand] = v; notesOf[hand] = notes;
@@ -116,6 +161,7 @@ function drawRows(score, rows, container, opts) {
       var beamsL = VF.Beam.generateBeams(notesOf.L, { groups: beamGroups(ts) });
       voices.R.draw(ctx, st); voices.L.draw(ctx, sb);
       beamsR.concat(beamsL).forEach(function (b) { b.setContext(ctx).draw(); });
+      tuplets.forEach(function (t) { t.setContext(ctx).draw(); });
       x += w;
     });
   });
@@ -150,6 +196,44 @@ function drawRows(score, rows, container, opts) {
     }
   });
 
+  // スラー: 段をまたぐ場合は片側だけを段の端まで描く(VexFlow 4.2.3 の Curve は from/to の片方が null でも
+  // もう片方の譜表の端まで描画してくれるので、そのまま利用する)
+  score.slurs.forEach(function (s) {
+    var a = noteById[s.from], b = noteById[s.to];
+    if (!a && !b) return;
+    var opt = { cps: [{ x: 0, y: 10 }, { x: 0, y: 10 }] };
+    if (a && b && rowOf[s.from] === rowOf[s.to]) {
+      new VF.Curve(a, b, opt).setContext(ctx).draw();
+    } else {
+      if (a) new VF.Curve(a, null, opt).setContext(ctx).draw();
+      if (b) new VF.Curve(null, b, opt).setContext(ctx).draw();
+    }
+  });
+
+  // ペダル: ヘ音記号の譜表の下に「Ped.」―――「✱」。段をまたぐときは段末まで線、次の段は段頭から
+  var rowLeft = LAYOUT.marginX + 8, rowRight = opts.width - LAYOUT.marginX;
+  score.pedals.forEach(function (p) {
+    var a = noteById[p.from], b = noteById[p.to];
+    if (!a && !b) return;
+    var segs = [];
+    if (a && b && rowOf[p.from] === rowOf[p.to]) {
+      segs.push({ row: rowOf[p.from], x1: a.getAbsoluteX(), x2: b.getAbsoluteX() + 10, s: true, e: true });
+    } else {
+      if (a) segs.push({ row: rowOf[p.from], x1: a.getAbsoluteX(), x2: rowRight, s: true, e: false });
+      if (b) segs.push({ row: rowOf[p.to], x1: rowLeft, x2: b.getAbsoluteX() + 10, s: false, e: true });
+    }
+    segs.forEach(function (g) {
+      if (!bassStaveOfRow[g.row]) return;
+      var y = bassStaveOfRow[g.row].getYForLine(4) + (opts.showDoremi ? 34 : 22);   // ヘ音記号の譜表の最下線の下(ドレミ表示中はラベルとぶつからないよう下げる)
+      ctx.save(); ctx.setStrokeStyle("#222"); ctx.setLineWidth(1.2); ctx.setFillStyle("#222"); ctx.setFont("serif", 11, "bold", "italic");
+      var x1 = g.x1;
+      if (g.s) { ctx.fillText("Ped.", g.x1, y + 4); x1 = g.x1 + 26; }
+      ctx.beginPath(); ctx.moveTo(x1, y); ctx.lineTo(g.x2, y); ctx.stroke();
+      if (g.e) ctx.fillText("✱", g.x2 + 1, y + 4);
+      ctx.restore();
+    });
+  });
+
   // カーソル(編集時のみ): 挿入位置に青い縦線
   if (opts.mode === "edit" && opts.cursor) {
     var hand = opts.cursor.hand, evs2 = handEvents(score, hand), idx = Math.min(opts.cursor.index, evs2.length);
@@ -175,7 +259,7 @@ function renderScore(score, container, opts) {
   var measures = deriveMeasures(score);
   var rows = layoutSystems(measures, opts.width);
   var lastMeasureIndex = measures.length ? measures[measures.length - 1].index : -1;
-  var height = drawRows(score, rows, container, { width: opts.width, mode: opts.mode, showDoremi: opts.showDoremi, selectedId: opts.selectedId, cursor: opts.cursor, playheadTick: opts.playheadTick, playheadHands: opts.playheadHands, lastMeasureIndex: lastMeasureIndex });
+  var height = drawRows(score, rows, container, { width: opts.width, mode: opts.mode, showDoremi: opts.showDoremi, selectedId: opts.selectedId, cursor: opts.cursor, playheadIds: opts.playheadIds, lastMeasureIndex: lastMeasureIndex });
   return { rows: rows, height: height };
 }
 
@@ -202,7 +286,7 @@ function renderPrintPages(score, container, opts) {
     }
     var holder = document.createElement("div"); page.appendChild(holder);
     container.appendChild(page);
-    drawRows(score, pageRows, holder, { width: opts.width, mode: "print", showDoremi: opts.showDoremi, selectedId: null, cursor: null, playheadTick: null, lastMeasureIndex: lastMeasureIndex });
+    drawRows(score, pageRows, holder, { width: opts.width, mode: "print", showDoremi: opts.showDoremi, selectedId: null, cursor: null, playheadIds: null, lastMeasureIndex: lastMeasureIndex });
   });
   return pages.length;
 }

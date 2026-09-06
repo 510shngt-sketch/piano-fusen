@@ -165,6 +165,100 @@ function applyAccidental(note, acc, keySig) {
   return note;
 }
 
+var TUPLET_OF = { 48: 32, 24: 16, 12: 8 }, UNTUPLET_OF = { 32: 48, 16: 24, 8: 12 };
+var DYNAMICS = ["pp", "p", "mp", "mf", "f", "ff"];
+
+function eventById(score, id) { for (var i = 0; i < score.events.length; i++) if (score.events[i].id === id) return score.events[i]; return null; }
+
+// 消えた事象を指す記号を掃除する。逆順(from が to より後)も削除。同じ組(from+to)の重複も先勝ちで間引く
+function pruneReferences(score) {
+  var ok = function (ref) {
+    var a = eventById(score, ref.from), b = eventById(score, ref.to);
+    return a && b && a !== b && a.tick < b.tick;
+  };
+  var dedupe = function (list) {
+    var seenPair = {};
+    return list.filter(function (r) {
+      var key = r.from + "|" + r.to;
+      if (seenPair[key]) return false;
+      seenPair[key] = true;
+      return true;
+    });
+  };
+  score.slurs = dedupe(score.slurs.filter(function (s) { return ok(s) && eventById(score, s.from).hand === eventById(score, s.to).hand; }));
+  score.pedals = dedupe(score.pedals.filter(ok));
+  var seen = {};
+  score.dynamics = score.dynamics.filter(function (d) { if (!eventById(score, d.eventId) || seen[d.eventId]) return false; seen[d.eventId] = true; return true; });
+  var n = deriveMeasures(score).length;
+  score.repeats = score.repeats.filter(function (r) { return Number.isInteger(r.startMeasure) && r.startMeasure >= 0 && r.startMeasure < n; })
+    .map(function (r) { return { startMeasure: r.startMeasure, endMeasure: (r.endMeasure == null || r.endMeasure < r.startMeasure || r.endMeasure >= n) ? null : r.endMeasure }; });
+  return score;
+}
+// 3連符の組を点検: 3個そろっていない組・その手の並びで隣接していない組は普通の長さに戻す
+function fixTuplets(score) {
+  var groups = {};
+  score.events.forEach(function (e) { if (e.tuplet) (groups[e.tuplet.id] = groups[e.tuplet.id] || []).push(e); });
+  var idxByHand = { R: {}, L: {} };
+  handEvents(score, "R").forEach(function (e, i) { idxByHand.R[e.id] = i; });
+  handEvents(score, "L").forEach(function (e, i) { idxByHand.L[e.id] = i; });
+  var revert = function (list) { list.forEach(function (e) { e.dur = UNTUPLET_OF[e.dur] || e.dur; e.tuplet = null; }); };
+  Object.keys(groups).forEach(function (id) {
+    var g = groups[id];
+    if (g.length !== 3) { revert(g); return; }
+    var hand = g[0].hand;
+    if (!g.every(function (e) { return e.hand === hand; })) { revert(g); return; }
+    var idx = idxByHand[hand];
+    var positions = g.map(function (e) { return idx[e.id]; }).sort(function (a, b) { return a - b; });
+    if (positions[2] - positions[0] !== 2) { revert(g); return; }
+  });
+  score.events.forEach(function (e) { if (!e.tuplet && UNTUPLET_OF[e.dur]) e.dur = UNTUPLET_OF[e.dur]; });
+  return score;
+}
+// 手の並びの末尾に残った装飾音(後ろに主音がない)は、ふつうの8分音符に戻す
+function fixGraces(score) {
+  ["R", "L"].forEach(function (hand) {
+    var evs = handEvents(score, hand);
+    for (var i = 0; i < evs.length; i++) {
+      if (!evs[i].grace) continue;
+      var hasFollowingNonGrace = false;
+      for (var j = i + 1; j < evs.length; j++) { if (!evs[j].grace) { hasFollowingNonGrace = true; break; } }
+      if (!hasFollowingNonGrace) evs[i].grace = false;
+    }
+  });
+  return score;
+}
+// 複製の際、事象のIDを新しく振り直しつつ、スラー・ペダル・強弱・3連符の組の参照を保つ
+function reissueEventIds(score) {
+  var idMap = {}, tupletMap = {};
+  score.events.forEach(function (e) { idMap[e.id] = newId("e"); });
+  score.events.forEach(function (e) {
+    if (e.tuplet) {
+      if (!tupletMap[e.tuplet.id]) tupletMap[e.tuplet.id] = newId("t");
+      e.tuplet = { id: tupletMap[e.tuplet.id], num: e.tuplet.num, in: e.tuplet.in };
+    }
+    e.id = idMap[e.id];
+  });
+  score.slurs.forEach(function (s) { if (idMap[s.from]) s.from = idMap[s.from]; if (idMap[s.to]) s.to = idMap[s.to]; });
+  score.pedals.forEach(function (p) { if (idMap[p.from]) p.from = idMap[p.from]; if (idMap[p.to]) p.to = idMap[p.to]; });
+  score.dynamics.forEach(function (d) { if (idMap[d.eventId]) d.eventId = idMap[d.eventId]; });
+  return score;
+}
+function measureIndexOf(score, tick) { return Math.floor(tick / measureTicks(score.timeSig)); }
+// 反復を展開した小節の再生順
+function playbackMeasureOrder(score) {
+  var n = deriveMeasures(score).length, order = [];
+  var reps = score.repeats.filter(function (r) { return r.endMeasure != null; }).sort(function (a, b) { return a.startMeasure - b.startMeasure; });
+  var i = 0, k = 0;
+  while (i < n) {
+    while (k < reps.length && reps[k].endMeasure < i) k++;
+    if (k < reps.length && reps[k].startMeasure === i) {
+      for (var pass = 0; pass < 2; pass++) for (var m = reps[k].startMeasure; m <= reps[k].endMeasure; m++) order.push(m);
+      i = reps[k].endMeasure + 1; k++;
+    } else { order.push(i); i++; }
+  }
+  return order;
+}
+
 function normalizeScore(obj) {
   if (!obj || typeof obj !== "object" || !Array.isArray(obj.events)) throw new Error("読み込めない曲データです");
   var s = newScore(obj.title);
@@ -180,20 +274,34 @@ function normalizeScore(obj) {
       var notes = Array.isArray(e.notes) ? e.notes.filter(function (n) { return n && Number.isInteger(n.midi) && n.midi >= 21 && n.midi <= 108; })
         .map(function (n) { return { midi: n.midi, acc: (n.acc === "#" || n.acc === "b" || n.acc === "n") ? n.acc : null }; }) : [];
       return { id: typeof e.id === "string" ? e.id : newId("e"), hand: e.hand, tick: 0, dur: Number(e.dur),
-        notes: notes, rest: !!e.rest || notes.length === 0, tie: !!e.tie, grace: !!e.grace, tuplet: e.tuplet || null };
+        notes: notes, rest: !!e.rest || notes.length === 0, tie: !!e.tie, grace: !!e.grace,
+        tuplet: (e.tuplet && typeof e.tuplet.id === "string") ? { id: e.tuplet.id, num: 3, in: 2 } : null };
     });
-  ["slurs", "dynamics", "pedals", "repeats"].forEach(function (k) { s[k] = Array.isArray(obj[k]) ? obj[k] : []; });
+  s.slurs = (Array.isArray(obj.slurs) ? obj.slurs : []).filter(function (r) { return r && typeof r.from === "string" && typeof r.to === "string"; });
+  s.pedals = (Array.isArray(obj.pedals) ? obj.pedals : []).filter(function (r) { return r && typeof r.from === "string" && typeof r.to === "string"; });
+  s.dynamics = (Array.isArray(obj.dynamics) ? obj.dynamics : []).filter(function (d) { return d && DYNAMICS.indexOf(d.text) >= 0; });
+  s.repeats = (Array.isArray(obj.repeats) ? obj.repeats : []).filter(function (r) { return r && Number.isInteger(r.startMeasure); })
+    .map(function (r) { return { startMeasure: r.startMeasure, endMeasure: Number.isInteger(r.endMeasure) ? r.endMeasure : null }; });
   s.createdAt = obj.createdAt || s.createdAt;
   s.updatedAt = obj.updatedAt || s.updatedAt;
   // 版移行: version 1 のみ。将来 version 2 を作ったらここに if (obj.version < 2) {...} を足す
   s.version = FORMAT_VERSION;
+  // fix 系は tick 順に依存するため、先に整列してから点検する(読み込んだ直後は tick が全て0のため)
   relayoutHand(s, "R"); relayoutHand(s, "L");
+  fixTuplets(s);
+  fixGraces(s);
+  relayoutHand(s, "R"); relayoutHand(s, "L");
+  pruneReferences(s);
   return s;
 }
 
 if (typeof module !== "undefined") module.exports = {
   FORMAT_VERSION: FORMAT_VERSION, TPQ: TPQ, DURATIONS: DURATIONS, KEY_SIGS: KEY_SIGS, TIME_SIGS: TIME_SIGS,
+  TUPLET_OF: TUPLET_OF, UNTUPLET_OF: UNTUPLET_OF, DYNAMICS: DYNAMICS,
   newId: newId, newScore: newScore, keySigInfo: keySigInfo, measureTicks: measureTicks, durationInfo: durationInfo,
   handEvents: handEvents, relayoutHand: relayoutHand, deriveMeasures: deriveMeasures,
-  spellMidi: spellMidi, doremiOf: doremiOf, applyAccidental: applyAccidental, normalizeScore: normalizeScore
+  spellMidi: spellMidi, doremiOf: doremiOf, applyAccidental: applyAccidental, normalizeScore: normalizeScore,
+  eventById: eventById, pruneReferences: pruneReferences, fixTuplets: fixTuplets, fixGraces: fixGraces,
+  reissueEventIds: reissueEventIds,
+  measureIndexOf: measureIndexOf, playbackMeasureOrder: playbackMeasureOrder
 };

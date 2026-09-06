@@ -26,11 +26,11 @@
   .iconBtn { min-width:44px; padding:0; font-size:20px; }
   #scoreWrap { flex:1; min-height:140px; overflow:auto; background:#fff; position:relative; }
   #score svg { display:block; }
-  #toolbar { background:#f3f3f3; border-top:1px solid var(--line); padding:4px 6px; }
-  .face { display:flex; gap:4px; align-items:center; flex-wrap:nowrap; overflow-x:auto; }
+  #toolbar { background:#f3f3f3; border-top:1px solid var(--line); padding:4px; }
+  .face { display:flex; gap:3px; align-items:center; flex-wrap:nowrap; overflow-x:auto; }
   .face[hidden] { display:none; }
-  .faceTabs { display:flex; gap:4px; margin-bottom:4px; align-items:center; }
-  .face button, .faceTabs button { min-width:40px; padding:0 6px; flex:none; }
+  .faceTabs { display:flex; gap:3px; margin-bottom:4px; align-items:center; }
+  .face button, .faceTabs button { min-width:38px; padding:0 4px; flex:none; }
   .face button svg { width:22px; height:30px; display:block; fill:currentColor; stroke:currentColor; }
   .spacer { flex:1; }
   #keyboard { height:132px; background:#fff; border-top:1px solid var(--line); position:relative; overflow-x:auto; overflow-y:hidden; touch-action:pan-x; user-select:none; -webkit-user-select:none; }
@@ -117,11 +117,29 @@
     <div id="listItems"></div>
     <div class="dlgBtns"><button id="btnNewScore">＋ 新しい曲</button><button id="btnListClose">閉じる</button></div>
   </dialog>
+  <dialog id="dlgDynamic">
+    <h2>強弱</h2>
+    <div class="dlgBtns" style="flex-wrap:wrap; justify-content:center;">
+      <button data-dyn="pp">pp</button><button data-dyn="p">p</button><button data-dyn="mp">mp</button>
+      <button data-dyn="mf">mf</button><button data-dyn="f">f</button><button data-dyn="ff">ff</button>
+    </div>
+    <div class="dlgBtns"><button id="btnDynClear">消す</button><button id="btnDynCancel">キャンセル</button></div>
+  </dialog>
+  <dialog id="dlgRepeat">
+    <h2>反復</h2>
+    <div class="dlgBtns" style="flex-direction:column; align-items:stretch;">
+      <button id="btnRepStart">この小節から繰り返し始め</button>
+      <button id="btnRepEnd">この小節で繰り返し終わり</button>
+      <button id="btnRepClear">この小節の反復記号を消す</button>
+    </div>
+    <div class="dlgBtns"><button id="btnRepCancel">キャンセル</button></div>
+  </dialog>
   <script src="vendor/vexflow.js"></script>
   <script src="js/model.js"></script>
   <script src="js/storage.js"></script>
   <script src="js/render.js"></script>
   <script src="js/playback.js"></script>
+  <script src="js/edit.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>
