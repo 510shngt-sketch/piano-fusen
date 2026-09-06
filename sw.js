@@ -1,7 +1,7 @@
 ﻿"use strict";
-var VERSION = "202609061356";            // deploy.ps1 が yyyyMMddHHmm に置き換える。ソースのままなら開発版
+var VERSION = "202609061358";            // deploy.ps1 が yyyyMMddHHmm に置き換える。ソースのままなら開発版
 var CACHE = "piano-fusen-" + VERSION;
-var DEV = VERSION === "202609061356";    // ソースのまま(=開発中)かどうか
+var DEV = !/^[0-9]{12}$/.test(VERSION);   // 配布時のスタンプ(12桁の日時)が入っていなければ開発中。トークン名を書くと置換に巻き込まれるので正規表現で判定
 var FILES = ["./", "./index.html", "./manifest.webmanifest", "./js/model.js", "./js/storage.js", "./js/share.js", "./js/render.js", "./js/playback.js", "./js/edit.js", "./js/app.js", "./vendor/vexflow.js", "./icons/icon-180.png", "./icons/icon-192.png", "./icons/icon-512.png"];
 
 self.addEventListener("install", function (e) {
