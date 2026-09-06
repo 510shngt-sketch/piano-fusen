@@ -267,7 +267,7 @@ function boot() {
   buildToolbar(); buildKeyboard();
   buildSignsFace(); bindEditing();
   buildSettingsDialog(); buildListDialog(); buildShareDialog();
-  buildDynamicDialog(); buildRepeatDialog();
+  buildDynamicDialog(); buildRepeatDialog(); buildRecordDialog();
   bindPlayback(); bindPrint();
   $("btnView").onclick = function () { setViewMode(true); };
   $("btnViewClose").onclick = function () { setViewMode(false); };
@@ -435,6 +435,137 @@ function buildListDialog() {
   $("btnList").onclick = function () { renderList(); $("dlgList").showModal(); };
   $("btnListClose").onclick = function () { $("dlgList").close(); };
   $("btnNewScore").onclick = newScoreAction;
+  $("btnRecordNew").onclick = startRecordingFlow;
+}
+
+// ---- マイクで下書き ----
+var recognizerScriptPromise = null;
+// js/recognizer.js は使うときになって初めて差し込む(初回だけ・キャッシュする)
+function loadRecognizerScript() {
+  if (recognizerScriptPromise) return recognizerScriptPromise;
+  recognizerScriptPromise = new Promise(function (resolve, reject) {
+    if (window.Recognizer) { resolve(); return; }
+    var s = document.createElement("script");
+    s.src = "js/recognizer.js";
+    s.onload = function () { resolve(); };
+    s.onerror = function () { reject(new Error("認識部品を読み込めませんでした")); };
+    document.head.appendChild(s);
+  });
+  recognizerScriptPromise.catch(function () { recognizerScriptPromise = null; });
+  return recognizerScriptPromise;
+}
+function setRecordState(st) { $("dlgRecord").dataset.state = st; }
+function recordTitleStamp() {
+  var d = new Date();
+  return pad2(d.getMonth() + 1) + "/" + pad2(d.getDate()) + " " + pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+}
+function recordAbortError() { return Object.assign(new Error("録音を取り消しました"), { name: "AbortError" }); }
+// 録音中の後始末(停止ボタン/自動停止のどちらでも安全に一度だけ)。null なら録音中ではない
+var activeRecStop = null;
+// カウント中の「中止」(録音そのものを取り消す)。null ならカウント中ではない
+var activeRecAbort = null;
+// 「部品を読み込み中」の間に「中止」が押されたことを覚えておくフラグ。読み込みが終わった時点でこれを見て中断する
+var recLoadAbortRequested = false;
+function startRecordingFlow() {
+  if (Player.playing) stop();
+  var s = state.score;
+  $("recBpm").value = s.bpm; $("recBpmVal").textContent = "♩=" + $("recBpm").value;   // スライダーの範囲(40-200)に丸まった値を表示
+  $("recTimeSig").value = s.timeSig.beats + "/" + s.timeSig.unit;
+  setRecordState("setup");
+  $("dlgList").close();
+  $("dlgRecord").showModal();
+  // 部品(約2MB)とモデルの読み込みをここで前もって始めておく。利用者がテンポや拍子を選んでいる間に
+  // ダウンロードを進めておくためで、失敗してもここでは無視する(本番の読み込みは runRecordingFlow が
+  // loadRecognizerScript/Recognizer.load の同じキャッシュ済み Promise を使って再度待つ)
+  loadRecognizerScript().then(function () { return Recognizer.load(); }).catch(function () {});
+}
+function runRecordingFlow() {
+  var bpm = Number($("recBpm").value) || 90;
+  var ts = $("recTimeSig").value.split("/");
+  var beats = Number(ts[0]), unit = Number(ts[1]);
+  var grid = Number($("recGrid").value);
+  var splitMidi = Number($("recSplit").value);
+
+  recLoadAbortRequested = false;
+  setRecordState("loading");
+  $("recLoadingText").textContent = "部品を読み込み中";
+  loadRecognizerScript().then(function () {
+    if (recLoadAbortRequested) throw recordAbortError();
+    return Recognizer.load(function (t) { $("recLoadingText").textContent = t; });
+  }).then(function () {
+    if (recLoadAbortRequested) throw recordAbortError();
+    return new Promise(function (resolve) {
+      var settled = false;
+      var rec = Recognizer.record({
+        bpm: bpm, beats: beats, unit: unit, maxSec: 60,
+        onCount: function (n) { setRecordState("count"); $("recCount").textContent = n; },
+        onRecording: function (sec, rms) {
+          setRecordState("recording");
+          $("recElapsed").textContent = sec.toFixed(1) + " 秒";
+          $("recLevel").style.width = Math.min(100, rms * 300) + "%";
+        },
+        onAutoStop: function () { doStop(); }
+      });
+      function doStop() {
+        if (settled) return;
+        settled = true;
+        activeRecStop = null; activeRecAbort = null;
+        setRecordState("analyzing");
+        $("recProgress").textContent = "解析中";
+        resolve(rec.stop());
+      }
+      activeRecStop = doStop;
+      activeRecAbort = rec.stop;   // カウント中の「中止」は完了扱いにせず、そのまま録音を取り消す
+      rec.ready.catch(function (e) {
+        if (settled) return;
+        settled = true;
+        activeRecStop = null; activeRecAbort = null;
+        if (e && e.name === "AbortError") { toast("取り消しました", true); } else { toast(e.message); }
+        setRecordState("setup");
+        resolve(null);
+      });
+    });
+  }).then(function (pcm) {
+    if (pcm == null) return null; // ready の失敗で既に setup に戻し済み
+    if (pcm.length < 22050 * 0.5) { toast("録音が短すぎます"); setRecordState("setup"); return null; }
+    return Recognizer.analyze(pcm, function (p) {
+      $("recProgress").textContent = typeof p === "number" ? "解析中 " + Math.round(p) + "%" : p;
+    }).then(function (notes) {
+      if (!notes.length) { toast("音を拾えませんでした。マイクに近づけてもう一度試してください"); setRecordState("setup"); return; }
+      var newS = importPerformance(notes, { bpm: bpm, timeSig: { beats: beats, unit: unit }, grid: grid, splitMidi: splitMidi,
+        title: "下書き " + recordTitleStamp() });
+      if (!saveScore(newS)) { toast("保存できませんでした(端末の保存領域が足りません)"); }
+      openScoreObject(newS);
+      $("dlgRecord").close();
+      toast("下書きができました。間違いは鍵盤で直せます", true);
+    });
+  }).catch(function (e) {
+    if (e && e.name === "AbortError") { toast("取り消しました", true); } else { toast((e && e.message) || "解析に失敗しました"); }
+    setRecordState("setup");
+  }).finally(function () { activeRecStop = null; activeRecAbort = null; });
+}
+function buildRecordDialog() {
+  TIME_SIGS.forEach(function (t) {
+    var o = document.createElement("option"); o.value = t.beats + "/" + t.unit; o.textContent = t.beats + "/" + t.unit;
+    $("recTimeSig").appendChild(o);
+  });
+  $("recBpm").oninput = function () { $("recBpmVal").textContent = "♩=" + $("recBpm").value; };
+  $("btnRecClose").onclick = function () { $("dlgRecord").close(); };
+  $("btnRecStart").onclick = runRecordingFlow;
+  $("btnRecStop").onclick = function () { if (activeRecStop) activeRecStop(); };
+  // 「部品を読み込み中」の中止: フラグを立てて画面だけ先に戻す(読み込みが終わった時点でも記録がやり直されない)
+  $("btnRecAbortLoad").onclick = function () { recLoadAbortRequested = true; setRecordState("setup"); };
+  // カウント中の中止: 録音そのものを取り消す(ready が AbortError で reject され、上の catch が setup に戻す)
+  $("btnRecAbortCount").onclick = function () { if (activeRecAbort) activeRecAbort(); };
+  // Esc: setup 中はそのまま閉じる。loading/count 中は対応する中止動作を行い、閉じずに setup へ戻す。
+  // recording/analyzing 中は何もしない(閉じない)
+  $("dlgRecord").addEventListener("cancel", function (e) {
+    var st = $("dlgRecord").dataset.state;
+    if (st === "setup") return;
+    e.preventDefault();
+    if (st === "loading") { recLoadAbortRequested = true; setRecordState("setup"); }
+    else if (st === "count") { if (activeRecAbort) activeRecAbort(); }
+  });
 }
 
 // ---- 共有・書き出し/読み込み ----
@@ -528,6 +659,7 @@ window.App = {
   play: play, stop: stop, preparePrint: preparePrint, printNow: printNow,
   setTupletMode: setTupletMode, setGraceMode: setGraceMode, startSlur: startSlur, startPedal: startPedal,
   setDynamic: setDynamic, setRepeat: setRepeat, clearRepeat: clearRepeat, toggleHand: toggleHand, toggleBars: toggleBars, setViewMode: setViewMode,
-  shareLink: shareLink, importFromText: importFromText, exportJson: exportJson, exportBackup: exportBackup, importScores: importScores
+  shareLink: shareLink, importFromText: importFromText, exportJson: exportJson, exportBackup: exportBackup, importScores: importScores,
+  startRecordingFlow: startRecordingFlow
 };
 document.addEventListener("DOMContentLoaded", boot);

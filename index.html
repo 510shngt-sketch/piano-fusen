@@ -61,11 +61,23 @@
   dialog input[type=text], dialog input[type=number], dialog select { flex:1; font:inherit; min-height:40px; padding:4px 8px; border:1px solid var(--line); border-radius:6px; }
   .dlgBtns { display:flex; justify-content:flex-end; gap:8px; margin-top:14px; }
   #dlgShare .dlgBtns { flex-direction:column; align-items:stretch; }
+  #dlgList .dlgBtns { flex-wrap: wrap; }
   #shareUrlBox { width:100%; min-height:70px; font-size:12px; margin-top:8px; }
   .listItem { display:flex; align-items:center; gap:8px; padding:8px 0; border-bottom:1px solid var(--line); }
   .listItem .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .listItem .date { color:var(--muted); font-size:12px; }
   .listItem.current .name { color:var(--accent); font-weight:600; }
+  #dlgRecord [data-panel] { display:none; }
+  #dlgRecord[data-state="setup"] [data-panel="setup"] { display:block; }
+  #dlgRecord[data-state="loading"] [data-panel="loading"] { display:block; }
+  #dlgRecord[data-state="count"] [data-panel="count"] { display:block; }
+  #dlgRecord[data-state="recording"] [data-panel="recording"] { display:block; }
+  #dlgRecord[data-state="analyzing"] [data-panel="analyzing"] { display:block; }
+  #recBpmVal { font-size:12px; color:var(--muted); }
+  #recCount { font-size:96px; text-align:center; font-weight:600; color:var(--accent); }
+  #recLevelTrack { height:14px; background:#eee; border-radius:7px; overflow:hidden; margin:10px 0; }
+  #recLevel { height:100%; width:0%; background:var(--accent); }
+  #recElapsed { font-size:20px; text-align:center; margin:6px 0; }
   @media print {
     body > * { display:none !important; }
     #printArea { display:block !important; }
@@ -129,7 +141,42 @@
   <dialog id="dlgList">
     <h2>曲一覧</h2>
     <div id="listItems"></div>
-    <div class="dlgBtns"><button id="btnNewScore">＋ 新しい曲</button><button id="btnListClose">閉じる</button></div>
+    <div class="dlgBtns"><button id="btnRecordNew">🎤 マイクで下書き</button><button id="btnNewScore">＋ 新しい曲</button><button id="btnListClose">閉じる</button></div>
+  </dialog>
+  <dialog id="dlgRecord" data-state="setup">
+    <h2>マイクで下書き</h2>
+    <div data-panel="setup">
+      <label>テンポ ♩= <input id="recBpm" type="range" min="40" max="200" step="1"> <span id="recBpmVal"></span></label>
+      <label>拍子 <select id="recTimeSig"></select></label>
+      <label>細かさ <select id="recGrid">
+        <option value="24">8分まで(おすすめ)</option>
+        <option value="12">16分まで</option>
+      </select></label>
+      <label>左右の分け目 <select id="recSplit">
+        <option value="60">中央のドから上を右手</option>
+        <option value="48">低いドから上を右手</option>
+        <option value="0">全部右手</option>
+      </select></label>
+      <p style="color:var(--muted); font-size:13px; margin:10px 0 0;">カウント1小節のあとに録音が始まります。演奏が終わったら停止を押してください(最長60秒)</p>
+      <div class="dlgBtns"><button id="btnRecStart">録音開始</button><button id="btnRecClose">閉じる</button></div>
+    </div>
+    <div data-panel="loading">
+      <p id="recLoadingText">部品を読み込み中</p>
+      <div class="dlgBtns"><button id="btnRecAbortLoad">中止</button></div>
+    </div>
+    <div data-panel="count">
+      <div id="recCount">4</div>
+      <div class="dlgBtns"><button id="btnRecAbortCount">中止</button></div>
+    </div>
+    <div data-panel="recording">
+      <div id="recElapsed">0.0 秒</div>
+      <div id="recLevelTrack"><div id="recLevel"></div></div>
+      <div class="dlgBtns"><button id="btnRecStop">停止</button></div>
+    </div>
+    <div data-panel="analyzing">
+      <p id="recProgress">解析中</p>
+      <p style="color:var(--muted); font-size:13px;">初回は準備に時間がかかります</p>
+    </div>
   </dialog>
   <dialog id="dlgShare">
     <h2>共有・バックアップ</h2>

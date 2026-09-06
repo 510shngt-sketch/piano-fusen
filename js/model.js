@@ -274,17 +274,82 @@ function splitGapToRests(ticks) {
   }
   return out;
 }
+// Basic Pitch の生の認識結果を掃除する: 範囲外・小さすぎる/短すぎる音を捨て、同音の近接重複をまとめ、再検出を間引く
+var DEFAULT_CLEAN_OPTS = { minAmp: 0.3, minDur: 0.06, minMidi: 21, maxMidi: 108, mergeWindow: 0.05 };
+function cleanRecognizedNotes(raw, opts) {
+  var o = {
+    minAmp: (opts && opts.minAmp != null) ? opts.minAmp : DEFAULT_CLEAN_OPTS.minAmp,
+    minDur: (opts && opts.minDur != null) ? opts.minDur : DEFAULT_CLEAN_OPTS.minDur,
+    minMidi: (opts && opts.minMidi != null) ? opts.minMidi : DEFAULT_CLEAN_OPTS.minMidi,
+    maxMidi: (opts && opts.maxMidi != null) ? opts.maxMidi : DEFAULT_CLEAN_OPTS.maxMidi,
+    mergeWindow: (opts && opts.mergeWindow != null) ? opts.mergeWindow : DEFAULT_CLEAN_OPTS.mergeWindow
+  };
+  // (1) 範囲外・小さすぎる・短すぎるものを捨てる(入力は複製して読み取るだけ、mutateしない)
+  // pitchMidi(Basic Pitchの通常出力)/pitch_midi(adjustNoteStart後の出力)のどちらでも受け付ける
+  var kept = (raw || []).map(function (n) {
+    if (!n) return null;
+    var midi = n.pitchMidi != null ? n.pitchMidi : n.pitch_midi;
+    return { start: n.startTimeSeconds, dur: n.durationSeconds, midi: midi, amplitude: n.amplitude };
+  }).filter(function (n) {
+    return n && Number.isFinite(n.start) && Number.isFinite(n.dur) &&
+      Number.isFinite(n.midi) && Number.isFinite(n.amplitude) &&
+      n.amplitude >= o.minAmp && n.dur >= o.minDur &&
+      n.midi >= o.minMidi && n.midi <= o.maxMidi;
+  // 以降の同一判定はすべて丸めた音高で行う(59.6と60.4を同じ音として扱う)
+  }).map(function (n) { return { start: n.start, dur: n.dur, midi: Math.round(n.midi) }; });
+  kept.sort(function (a, b) { return a.start - b.start || a.midi - b.midi; });
+
+  // (2) 同じ midi で開始が mergeWindow 以内のものは連鎖的に1つにまとめる
+  // (代表の開始は連鎖の先頭(最初の開始)のまま、長さは連鎖内の最大を採用。
+  //  比較は代表の開始ではなく「連鎖内で直前に取り込んだ生ノートの開始」に対して行うことで、
+  //  0.00/0.03/0.06 のように少しずつ離れた3個以上の検出も推移的に1つへまとめる)
+  var merged = [];
+  var lastIndexByMidi = {};
+  kept.forEach(function (n) {
+    var idx = lastIndexByMidi[n.midi];
+    if (idx !== undefined && Math.abs(merged[idx].chainLastStart - n.start) <= o.mergeWindow) {
+      var m = merged[idx];
+      if (n.dur > m.dur) m.dur = n.dur;
+      m.chainLastStart = n.start;
+      return;
+    }
+    merged.push({ start: n.start, dur: n.dur, midi: n.midi, chainLastStart: n.start });
+    lastIndexByMidi[n.midi] = merged.length - 1;
+  });
+  merged.sort(function (a, b) { return a.start - b.start || a.midi - b.midi; });
+
+  // (3) 同じ音の再検出(前の音がまだ鳴っている間に始まり、前の音の終わり+mergeWindow までに収まる)を捨てる
+  var result = [];
+  merged.forEach(function (n) {
+    var nEnd = n.start + n.dur;
+    var isRedetection = result.some(function (k) {
+      if (k.midi !== n.midi) return false;
+      var kEnd = k.start + k.dur;
+      return n.start >= k.start && n.start < kEnd && nEnd <= kEnd + o.mergeWindow;
+    });
+    if (!isRedetection) result.push(n);
+  });
+
+  // (4) onsetSec 昇順に並べ、{midi, onsetSec, durSec} に整形
+  result.sort(function (a, b) { return a.start - b.start || a.midi - b.midi; });
+  // (1)の kept で既に丸め済みなので、ここでは再度 Math.round しない
+  return result.map(function (n) { return { midi: n.midi, onsetSec: n.start, durSec: n.dur }; });
+}
+
 // 演奏データ(検出した音符の並び)から譜面を組み立てる。spec §10 の手順どおり
 function importPerformance(notes, options) {
   options = options || {};
   var bpm = Number(options.bpm) || 120;
   var splitMidi = options.splitMidi != null ? options.splitMidi : 60;
+  var g = Number(options.grid);
+  var grid = g === 24 ? 24 : 12;   // 16分(12)/8分(24)の丸め単位("24"のような文字列指定も受け付ける)
+  var snapCandidates = NON_TUPLET_DURATIONS.filter(function (v) { return v >= grid; });
 
-  function toTicks(sec) { return Math.round(sec * bpm / 60 * TPQ / 12) * 12; }
-  // DURATIONS(3連除く)の中で一番近い値へ丸める。同着なら大きい方
+  function toTicks(sec) { return Math.round(sec * bpm / 60 * TPQ / grid) * grid; }
+  // DURATIONS(3連除く、grid未満は除外)の中で一番近い値へ丸める。同着なら大きい方
   function snapDuration(ticks) {
-    var best = NON_TUPLET_DURATIONS[0], bestDiff = Math.abs(ticks - best);
-    NON_TUPLET_DURATIONS.forEach(function (v) {
+    var best = snapCandidates[0], bestDiff = Math.abs(ticks - best);
+    snapCandidates.forEach(function (v) {
       var diff = Math.abs(ticks - v);
       if (diff < bestDiff || (diff === bestDiff && v > best)) { best = v; bestDiff = diff; }
     });
@@ -388,6 +453,6 @@ if (typeof module !== "undefined") module.exports = {
   eventById: eventById, pruneReferences: pruneReferences, fixTuplets: fixTuplets, fixGraces: fixGraces,
   reissueEventIds: reissueEventIds,
   measureIndexOf: measureIndexOf, playbackMeasureOrder: playbackMeasureOrder,
-  importPerformance: importPerformance,
+  importPerformance: importPerformance, cleanRecognizedNotes: cleanRecognizedNotes,
   NON_TUPLET_DURATIONS: NON_TUPLET_DURATIONS, splitGapToRests: splitGapToRests
 };
