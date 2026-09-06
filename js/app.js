@@ -12,7 +12,8 @@ function render() {
   var ks = keySigInfo(s.keySig);
   $("infoMeta").textContent = s.timeSig.beats + "/" + s.timeSig.unit + "拍子 ・ " + ks.label + " ・ ♩=" + s.bpm;
   renderScore(s, $("score"), { width: Math.max(320, $("scoreWrap").clientWidth), mode: "edit", showDoremi: s.showDoremi.screen,
-    selectedId: state.selectedId, cursor: { hand: state.hand, index: state.cursor[state.hand] } });
+    selectedId: state.viewMode ? null : state.selectedId,
+    cursor: state.viewMode ? null : { hand: state.hand, index: state.cursor[state.hand] } });
   renderToolbarState();
 }
 function renderToolbarState() {
@@ -190,10 +191,33 @@ function toggleBars(hidden) {
   document.body.classList.toggle("barsHidden", hidden);
   var b = $("btnBars"); b.textContent = hidden ? "﹀" : "︿"; b.setAttribute("aria-label", hidden ? "上のメニューを出す" : "上のメニューを隠す"); b.title = b.getAttribute("aria-label");
   render();
+  // 折りたたみで譜面の幅が変わり描き直されるため、再生中は次のtickで必ずハイライトを描き直させる
+  if (Player.playing) playState.lastKey = "";
 }
 function applyBarsDefault() {
   var hidden = window.innerHeight <= 520;
   if (hidden !== document.body.classList.contains("barsHidden")) toggleBars(hidden);
+}
+
+// ---- 表示モード(譜面台): 全画面表示・タップ選択無効・画面を消さない ----
+var wakeLock = null;
+function requestWakeLock() {
+  if (!state.viewMode || !navigator.wakeLock) return;
+  navigator.wakeLock.request("screen").then(function (l) { wakeLock = l; }).catch(function () {});
+}
+function releaseWakeLock() {
+  if (wakeLock) { wakeLock.release().catch(function () {}); wakeLock = null; }
+}
+document.addEventListener("visibilitychange", function () {
+  if (document.visibilityState === "visible") requestWakeLock();
+});
+function setViewMode(on) {
+  state.viewMode = !!on;
+  document.body.classList.toggle("viewMode", state.viewMode);
+  if (state.viewMode) requestWakeLock(); else releaseWakeLock();
+  render();
+  // 表示モードの切り替えで譜面が描き直されるため、再生中は次のtickで必ずハイライトを描き直させる
+  if (Player.playing) playState.lastKey = "";
 }
 
 // ---- 再生 ----
@@ -219,8 +243,12 @@ function play() {
   if (!list) { toast("鳴らす音符がありません", true); return; }
   playState.list = list;
   $("btnPlay").hidden = true; $("btnStop").hidden = false; playState.lastKey = "";
+  if ($("btnViewPlay")) $("btnViewPlay").textContent = "■";
 }
-function stop() { Player.stop(); $("btnPlay").hidden = false; $("btnStop").hidden = true; playState.lastKey = ""; playState.list = []; render(); }
+function stop() {
+  Player.stop(); $("btnPlay").hidden = false; $("btnStop").hidden = true; playState.lastKey = ""; playState.list = []; render();
+  if ($("btnViewPlay")) $("btnViewPlay").textContent = "▶";
+}
 function bindPlayback() {
   $("btnPlay").onclick = play; $("btnStop").onclick = stop;
   $("playBpm").oninput = function () { setPlayBpm($("playBpm").value); };
@@ -228,11 +256,22 @@ function bindPlayback() {
 
 // ---- 起動 ----
 function boot() {
+  // 共有リンクで開かれた場合: 通常の起動(最後に開いた曲を開く)はこの後すぐ続けて行い、
+  // 取り込みは非同期(decodeShare待ち)で完了した時点で openScoreObject が改めて呼ばれる
+  var shareHash = parseShareHash(location.hash);
+  if (shareHash) {
+    decodeShare(shareHash).then(function (obj) { importScores([obj]); })
+      .catch(function () { toast("共有リンクを読めませんでした"); })
+      .finally(function () { history.replaceState(null, "", location.pathname + location.search); });
+  }
   buildToolbar(); buildKeyboard();
   buildSignsFace(); bindEditing();
-  buildSettingsDialog(); buildListDialog();
+  buildSettingsDialog(); buildListDialog(); buildShareDialog();
   buildDynamicDialog(); buildRepeatDialog();
   bindPlayback(); bindPrint();
+  $("btnView").onclick = function () { setViewMode(true); };
+  $("btnViewClose").onclick = function () { setViewMode(false); };
+  $("btnViewPlay").onclick = function () { if (Player.playing) stop(); else play(); };
   var lastId = getLastOpen();
   var ids = listScores().map(function (m) { return m.id; });
   if (lastId) { ids = ids.filter(function (id) { return id !== lastId; }); ids.unshift(lastId); }
@@ -264,7 +303,11 @@ function loadSample() {
     var s = normalizeScore(j); s.id = newId("s"); saveScore(s); openScoreObject(s); return s;
   });
 }
-function resetForTest() { Object.keys(localStorage).filter(function (k) { return k.indexOf("pianoFusen.") === 0; }).forEach(function (k) { localStorage.removeItem(k); }); }
+function resetForTest() {
+  Object.keys(localStorage).filter(function (k) { return k.indexOf("pianoFusen.") === 0; }).forEach(function (k) { localStorage.removeItem(k); });
+  if ("serviceWorker" in navigator) navigator.serviceWorker.getRegistrations().then(function (rs) { rs.forEach(function (r) { r.unregister(); }); });
+  if (window.caches) caches.keys().then(function (ks) { ks.forEach(function (k) { caches.delete(k); }); });
+}
 
 function buildSignsFace() {
   var ts = $("toolSigns");
@@ -306,14 +349,36 @@ function buildRepeatDialog() {
   $("btnRepClear").onclick = function () { clearRepeat(); $("dlgRepeat").close(); };
   $("btnRepCancel").onclick = function () { $("dlgRepeat").close(); };
 }
+// タップ地点から一番近い音符(28px以内)を拾う。iOSで指が太くて外れた場合の救済
+function nearestNoteIdAt(x, y) {
+  var best = null, bestDist = Infinity;
+  document.querySelectorAll('#score g.vf-stavenote[id^="vf-"]').forEach(function (node) {
+    var id = node.id.slice(3);
+    if (!findEvent(id)) return;
+    var r = node.getBoundingClientRect();
+    var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    var d = Math.hypot(x - cx, y - cy);
+    if (d < bestDist) { bestDist = d; best = id; }
+  });
+  return bestDist <= 28 ? best : null;
+}
 function bindEditing() {
-  $("score").addEventListener("click", function (e) {
+  var scorePending = null;
+  $("score").addEventListener("pointerdown", function (e) {
+    scorePending = { x: e.clientX, y: e.clientY, pointerId: e.pointerId };
+  });
+  $("score").addEventListener("pointerup", function (e) {
+    var p = scorePending; scorePending = null;
+    if (!p || p.pointerId !== e.pointerId) return;
+    if (Math.hypot(e.clientX - p.x, e.clientY - p.y) >= 8) return; // スクロール操作とみなす
+    if (state.viewMode) return;
     var g = e.target.closest('g[id^="vf-"]');
-    select(g ? g.id.slice(3) : null);
+    select(g ? g.id.slice(3) : nearestNoteIdAt(e.clientX, e.clientY));
   });
   $("btnDelete").onclick = deleteSelected;
   $("btnUndo").onclick = undo; $("btnRedo").onclick = redo;
   document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && state.viewMode) { setViewMode(false); return; }
     if (document.querySelector("dialog[open]")) return;
     if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA") return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); }
@@ -372,6 +437,76 @@ function buildListDialog() {
   $("btnNewScore").onclick = newScoreAction;
 }
 
+// ---- 共有・書き出し/読み込み ----
+function safeName(title) { return String(title || "").replace(/[\\/:*?"<>|]/g, "_").replace(/^\.+|\.+$/g, ""); }
+function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+function todayYyyymmdd() { var d = new Date(); return "" + d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate()); }
+function downloadText(name, text) {
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+function showShareUrlBox(url) {
+  var box = $("shareUrlBox");
+  box.value = url; box.hidden = false;
+  toast("長押しして全部コピーしてください", true);
+}
+function shareLink() {
+  return shareUrl(location.origin + location.pathname, state.score).then(function (url) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      // コピーできたときはこの場で用が済むのでダイアログを閉じる。失敗時はテキスト欄で手動コピーしてもらうので開いたままにする
+      return navigator.clipboard.writeText(url).then(function () { $("dlgShare").close(); toast("リンクをコピーしました", true); return url; })
+        .catch(function () { showShareUrlBox(url); return url; });
+    }
+    showShareUrlBox(url);
+    return url;
+  }).catch(function (e) { toast((e && e.message) || "リンクを作れませんでした"); });
+}
+function exportJson() {
+  var s = state.score;
+  downloadText((safeName(s.title).trim() || "曲") + ".piano-fusen.json", JSON.stringify(s, null, 2));
+}
+function exportBackup() {
+  var scores = listScores().map(function (m) { return loadScore(m.id); }).filter(Boolean);
+  downloadText("ピアノ譜せん_バックアップ_" + todayYyyymmdd() + ".json", JSON.stringify(makeBackup(scores), null, 2));
+}
+function importFromText(text) {
+  try { var r = parseImport(text); importScores(r.scores); }
+  catch (e) { toast(e.message); }
+}
+function buildShareDialog() {
+  $("btnShare").onclick = function () {
+    $("shareUrlBox").hidden = true; $("shareUrlBox").value = "";
+    $("btnShareSend").hidden = !navigator.share;
+    $("dlgShare").showModal();
+  };
+  $("btnShareClose").onclick = function () { $("dlgShare").close(); };
+  $("btnShareCopy").onclick = shareLink;
+  $("btnShareSend").onclick = function () {
+    // 先にURLを作ってから navigator.share を呼ぶ。共有シート側の失敗(キャンセル含む)は英語のメッセージが来ることがあるので、
+    // それはトーストに出さず、キャンセル(AbortError)なら何もせず、それ以外はURLのテキスト欄にフォールバックする
+    shareUrl(location.origin + location.pathname, state.score).then(function (url) {
+      return navigator.share({ title: state.score.title, url: url }).catch(function (e) {
+        if (e && e.name === "AbortError") return;
+        showShareUrlBox(url);
+      });
+    }).catch(function (e) { toast((e && e.message) || "送れませんでした"); });
+  };
+  $("btnShareExportJson").onclick = exportJson;
+  $("btnShareExportBackup").onclick = exportBackup;
+  $("btnShareImport").onclick = function () { $("fileImport").click(); };
+  $("fileImport").onchange = function (e) {
+    var file = e.target.files && e.target.files[0];
+    var input = e.target;
+    if (!file) return;
+    $("dlgShare").close();  // 取り込んだ曲が共有ダイアログの下に隠れたままにならないよう、先に閉じる
+    file.text().then(function (text) { importFromText(text); }).finally(function () { input.value = ""; });
+  };
+}
+
 // ---- 印刷 ----
 var PRINT = { widthPx: Math.round(180 / 25.4 * 96), heightPx: Math.round(267 / 25.4 * 96) };
 function preparePrint() {
@@ -392,6 +527,7 @@ window.App = {
   updateSettings: updateSettings, newScoreAction: newScoreAction, openScore: openScore, duplicateScore: duplicateScore, deleteScore: deleteScore, listScores: listScores,
   play: play, stop: stop, preparePrint: preparePrint, printNow: printNow,
   setTupletMode: setTupletMode, setGraceMode: setGraceMode, startSlur: startSlur, startPedal: startPedal,
-  setDynamic: setDynamic, setRepeat: setRepeat, clearRepeat: clearRepeat, toggleHand: toggleHand, toggleBars: toggleBars
+  setDynamic: setDynamic, setRepeat: setRepeat, clearRepeat: clearRepeat, toggleHand: toggleHand, toggleBars: toggleBars, setViewMode: setViewMode,
+  shareLink: shareLink, importFromText: importFromText, exportJson: exportJson, exportBackup: exportBackup, importScores: importScores
 };
 document.addEventListener("DOMContentLoaded", boot);

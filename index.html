@@ -19,14 +19,14 @@
   button.on { background:var(--accent-bg); border-color:var(--accent); color:var(--accent); font-weight:600; }
   #topbar, #infobar { display:flex; align-items:center; gap:6px; padding:4px 6px; background:#fff; border-bottom:1px solid var(--line); flex-wrap:nowrap; }
   #infobar select { font:inherit; min-height:40px; border:1px solid var(--line); border-radius:8px; background:#fff; flex:none; }
-  #scoreTitle { flex:1; text-align:center; font-weight:600; font-size:16px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #scoreTitle { flex:1; min-width:0; text-align:center; font-weight:600; font-size:16px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   #infoMeta { flex:1; min-width:0; color:var(--muted); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer; }
   #playBpm { width:64px; flex:none; }
   #playBpmVal { font-size:12px; color:var(--muted); min-width:3.2em; flex:none; }
   .iconBtn { min-width:44px; padding:0; font-size:20px; }
   #scoreArea { flex:1; position:relative; display:flex; min-height:140px; }
   #scoreWrap { flex:1; overflow:auto; background:#fff; }
-  #score svg { display:block; }
+  #score svg { display:block; cursor:pointer; }
   #toolbar { background:#f3f3f3; border-top:1px solid var(--line); padding:4px; }
   .face { display:flex; gap:3px; align-items:center; flex-wrap:nowrap; overflow-x:auto; }
   .face[hidden] { display:none; }
@@ -38,6 +38,12 @@
   #keyboard { height:132px; background:#fff; border-top:1px solid var(--line); position:relative; overflow-x:auto; overflow-y:hidden; touch-action:pan-x; user-select:none; -webkit-user-select:none; }
   #btnBars { position:absolute; top:4px; right:8px; width:36px; height:36px; min-width:36px; min-height:36px; padding:0; border-radius:18px; background:rgba(255,255,255,.85); z-index:5; font-size:14px; }
   body.barsHidden #topbar, body.barsHidden #infobar { display:none; }
+  body.viewMode #topbar, body.viewMode #infobar, body.viewMode #toolbar, body.viewMode #keyboard, body.viewMode #btnBars { display:none !important; }
+  body.viewMode #scoreArea { min-height:0; }
+  #btnViewClose, #btnViewPlay { position:absolute; top:8px; width:44px; height:44px; min-width:44px; min-height:44px; padding:0; border-radius:22px; background:rgba(255,255,255,.9); z-index:6; font-size:18px; display:none; align-items:center; justify-content:center; }
+  #btnViewClose { right:8px; }
+  #btnViewPlay { right:60px; }
+  body.viewMode #btnViewClose, body.viewMode #btnViewPlay { display:flex; }
   @media (max-height: 520px) {
     #topbar, #infobar { padding:2px 6px; }
     button { min-height:36px; }
@@ -54,6 +60,8 @@
   dialog label { display:flex; align-items:center; gap:8px; margin:10px 0; }
   dialog input[type=text], dialog input[type=number], dialog select { flex:1; font:inherit; min-height:40px; padding:4px 8px; border:1px solid var(--line); border-radius:6px; }
   .dlgBtns { display:flex; justify-content:flex-end; gap:8px; margin-top:14px; }
+  #dlgShare .dlgBtns { flex-direction:column; align-items:stretch; }
+  #shareUrlBox { width:100%; min-height:70px; font-size:12px; margin-top:8px; }
   .listItem { display:flex; align-items:center; gap:8px; padding:8px 0; border-bottom:1px solid var(--line); }
   .listItem .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .listItem .date { color:var(--muted); font-size:12px; }
@@ -74,8 +82,10 @@
 </head>
 <body>
   <div id="topbar">
-    <button id="btnList" aria-label="曲一覧">☰ 曲一覧</button>
+    <button id="btnList" class="iconBtn" aria-label="曲一覧" title="曲一覧">☰</button>
     <div id="scoreTitle">新しい曲</div>
+    <button id="btnShare" class="iconBtn" aria-label="共有・バックアップ" title="共有・バックアップ">📤</button>
+    <button id="btnView" class="iconBtn" aria-label="表示モード" title="表示モード">📖</button>
     <button id="btnSettings" class="iconBtn" aria-label="曲の設定" title="曲の設定">⚙</button>
     <button id="btnPrint" class="iconBtn" aria-label="印刷" title="印刷">🖨</button>
   </div>
@@ -85,7 +95,7 @@
     <input id="playBpm" type="range" min="30" max="240" step="1" aria-label="再生テンポ">
     <span id="playBpmVal">♩=90</span>
   </div>
-  <div id="scoreArea"><div id="scoreWrap"><div id="score"></div></div><button id="btnBars" aria-label="上のメニューを隠す" title="上のメニューを隠す">︿</button></div>
+  <div id="scoreArea"><div id="scoreWrap"><div id="score"></div></div><button id="btnBars" aria-label="上のメニューを隠す" title="上のメニューを隠す">︿</button><button id="btnViewPlay" aria-label="再生/停止" title="再生/停止">▶</button><button id="btnViewClose" aria-label="表示モードを終了" title="表示モードを終了">✕</button></div>
   <div id="toolbar">
     <div class="faceTabs">
       <button id="btnFaceNotes" class="on">音符</button>
@@ -121,6 +131,20 @@
     <div id="listItems"></div>
     <div class="dlgBtns"><button id="btnNewScore">＋ 新しい曲</button><button id="btnListClose">閉じる</button></div>
   </dialog>
+  <dialog id="dlgShare">
+    <h2>共有・バックアップ</h2>
+    <p style="color:var(--muted); font-size:13px; margin:0 0 10px;">リンクを LINE やメールで自分に送り、別の端末で開くとこの曲が入ります。曲のデータは端末の中だけに保存されます。ホーム画面のアプリに入れたいときは、リンクではなく「JSONで書き出す」で送り、アプリの📤→「JSONを読み込む」で取り込んでください(iPhoneはリンクをSafariで開くため)</p>
+    <textarea id="shareUrlBox" readonly hidden></textarea>
+    <div class="dlgBtns">
+      <button id="btnShareCopy">リンクをコピー</button>
+      <button id="btnShareSend" hidden>送る…</button>
+      <button id="btnShareExportJson">この曲をJSONで書き出す</button>
+      <button id="btnShareExportBackup">すべての曲をバックアップ</button>
+      <button id="btnShareImport">JSONを読み込む</button>
+      <button id="btnShareClose">閉じる</button>
+    </div>
+    <input id="fileImport" type="file" accept=".json,application/json" hidden>
+  </dialog>
   <dialog id="dlgDynamic">
     <h2>強弱</h2>
     <div class="dlgBtns" style="flex-wrap:wrap; justify-content:center;">
@@ -141,9 +165,24 @@
   <script src="vendor/vexflow.js"></script>
   <script src="js/model.js"></script>
   <script src="js/storage.js"></script>
+  <script src="js/share.js"></script>
   <script src="js/render.js"></script>
   <script src="js/playback.js"></script>
   <script src="js/edit.js"></script>
   <script src="js/app.js"></script>
+  <script>
+    if ("serviceWorker" in navigator && location.protocol !== "file:") {
+      // register の前に「すでに旧版が動いていたか」を覚えておく(初回インストールでは知らせない)
+      var hadController = !!navigator.serviceWorker.controller;
+      navigator.serviceWorker.register("sw.js").then(function (reg) {
+        reg.addEventListener("updatefound", function () {
+          var nw = reg.installing;
+          nw && nw.addEventListener("statechange", function () {
+            if (nw.state === "activated" && hadController) toast("新しい版があります。次に開いたときに切り替わります", true);
+          });
+        });
+      }).catch(function () {});
+    }
+  </script>
 </body>
 </html>

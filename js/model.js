@@ -259,12 +259,96 @@ function playbackMeasureOrder(score) {
   return order;
 }
 
+var NON_TUPLET_DURATIONS = DURATIONS.filter(function (d) { return !d.tuplet; }).map(function (d) { return d.ticks; });
+// 隙間(tick数)を、DURATIONSにある長さ(3連除く)へ大きい順の貪欲法で分解する
+function splitGapToRests(ticks) {
+  var out = [], remaining = ticks;
+  while (remaining >= 12) {
+    var picked = null;
+    for (var i = 0; i < NON_TUPLET_DURATIONS.length; i++) {
+      if (NON_TUPLET_DURATIONS[i] <= remaining) { picked = NON_TUPLET_DURATIONS[i]; break; }
+    }
+    if (picked == null) break;
+    out.push(picked);
+    remaining -= picked;
+  }
+  return out;
+}
+// 演奏データ(検出した音符の並び)から譜面を組み立てる。spec §10 の手順どおり
+function importPerformance(notes, options) {
+  options = options || {};
+  var bpm = Number(options.bpm) || 120;
+  var splitMidi = options.splitMidi != null ? options.splitMidi : 60;
+
+  function toTicks(sec) { return Math.round(sec * bpm / 60 * TPQ / 12) * 12; }
+  // DURATIONS(3連除く)の中で一番近い値へ丸める。同着なら大きい方
+  function snapDuration(ticks) {
+    var best = NON_TUPLET_DURATIONS[0], bestDiff = Math.abs(ticks - best);
+    NON_TUPLET_DURATIONS.forEach(function (v) {
+      var diff = Math.abs(ticks - v);
+      if (diff < bestDiff || (diff === bestDiff && v > best)) { best = v; bestDiff = diff; }
+    });
+    return best;
+  }
+  // 許容値の中で ticks 以下の一番大きい値(重なりの縮小に使う)
+  function snapDown(ticks) {
+    for (var i = 0; i < NON_TUPLET_DURATIONS.length; i++) if (NON_TUPLET_DURATIONS[i] <= ticks) return NON_TUPLET_DURATIONS[i];
+    return NON_TUPLET_DURATIONS[NON_TUPLET_DURATIONS.length - 1];
+  }
+
+  var byHand = { R: [], L: [] };
+  (notes || []).forEach(function (n) {
+    var hand = n.midi < splitMidi ? "L" : "R";
+    var tick = toTicks(Math.max(0, n.onsetSec));
+    var dur = snapDuration(Math.max(12, toTicks(n.durSec)));
+    byHand[hand].push({ tick: tick, dur: dur, midi: n.midi });
+  });
+
+  var events = [];
+  ["R", "L"].forEach(function (hand) {
+    var list = byHand[hand].slice().sort(function (a, b) { return a.tick - b.tick; });
+    // 同じ手・同じ丸めた onset の音を1つの和音事象にまとめる
+    var groups = [];
+    list.forEach(function (n) {
+      var last = groups[groups.length - 1];
+      if (last && last.tick === n.tick) { last.midis.push(n.midi); last.dur = Math.max(last.dur, n.dur); }
+      else groups.push({ tick: n.tick, dur: n.dur, midis: [n.midi] });
+    });
+    // 重なり(次の始まりが前の終わりより前)は前の事象を縮める
+    for (var i = 0; i < groups.length - 1; i++) {
+      var cur = groups[i], next = groups[i + 1];
+      if (next.tick < cur.tick + cur.dur) cur.dur = snapDown(Math.max(12, next.tick - cur.tick));
+    }
+    // 隙間(先頭の無音も含む)は休符として埋める
+    var cursor = 0;
+    groups.forEach(function (g) {
+      if (g.tick > cursor) {
+        splitGapToRests(g.tick - cursor).forEach(function (restDur) {
+          events.push({ id: newId("e"), hand: hand, tick: 0, dur: restDur, notes: [], rest: true, tie: false, grace: false, tuplet: null });
+        });
+      }
+      events.push({
+        id: newId("e"), hand: hand, tick: 0, dur: g.dur,
+        notes: g.midis.map(function (m) { return { midi: m, acc: null }; }),
+        rest: false, tie: false, grace: false, tuplet: null
+      });
+      cursor = g.tick + g.dur;
+    });
+  });
+
+  var score = newScore(options.title);
+  if (options.bpm != null) score.bpm = options.bpm;
+  if (options.timeSig) score.timeSig = options.timeSig;
+  score.events = events;
+  return normalizeScore(score);
+}
+
 function normalizeScore(obj) {
   if (!obj || typeof obj !== "object" || !Array.isArray(obj.events)) throw new Error("読み込めない曲データです");
   var s = newScore(obj.title);
   s.id = typeof obj.id === "string" ? obj.id : s.id;
-  s.title = typeof obj.title === "string" ? obj.title : s.title;
-  s.composer = typeof obj.composer === "string" ? obj.composer : "";
+  s.title = (typeof obj.title === "string" && obj.title.trim()) ? obj.title.slice(0, 100) : "新しい曲";
+  s.composer = typeof obj.composer === "string" ? obj.composer.slice(0, 100) : "";
   s.bpm = Math.min(240, Math.max(30, Math.round(Number(obj.bpm) || 90)));
   if (obj.timeSig && TIME_SIGS.some(function (t) { return t.beats === obj.timeSig.beats && t.unit === obj.timeSig.unit; })) s.timeSig = { beats: obj.timeSig.beats, unit: obj.timeSig.unit };
   s.keySig = keySigInfo(obj.keySig).name;
@@ -303,5 +387,7 @@ if (typeof module !== "undefined") module.exports = {
   spellMidi: spellMidi, doremiOf: doremiOf, applyAccidental: applyAccidental, normalizeScore: normalizeScore,
   eventById: eventById, pruneReferences: pruneReferences, fixTuplets: fixTuplets, fixGraces: fixGraces,
   reissueEventIds: reissueEventIds,
-  measureIndexOf: measureIndexOf, playbackMeasureOrder: playbackMeasureOrder
+  measureIndexOf: measureIndexOf, playbackMeasureOrder: playbackMeasureOrder,
+  importPerformance: importPerformance,
+  NON_TUPLET_DURATIONS: NON_TUPLET_DURATIONS, splitGapToRests: splitGapToRests
 };

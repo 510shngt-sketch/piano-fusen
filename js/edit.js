@@ -2,7 +2,7 @@
 var state = {
   score: null, hand: "R", baseDur: 48, dotted: false, chordMode: false, chordAnchorId: null,
   cursor: { R: 0, L: 0 }, selectedId: null, history: [], future: [],
-  tupletMode: null, graceMode: false, pending: null, graceJustAdded: false
+  tupletMode: null, graceMode: false, pending: null, graceJustAdded: false, viewMode: false
 };
 var HISTORY_MAX = 100;
 function currentDur() { return state.dotted && state.baseDur !== 192 ? state.baseDur * 1.5 : state.baseDur; }
@@ -327,6 +327,36 @@ function duplicateScore(id) {
   reissueEventIds(s);
   saveScore(s); openScoreObject(s); $("dlgList").close();
 }
+// 共有リンク/JSONファイルから読み込んだ曲(1曲でも複数でも)を取り込む
+function importScores(objs) {
+  var normalized = [];
+  (objs || []).forEach(function (obj) {
+    try { normalized.push(normalizeScore(obj)); } catch (e) { /* 壊れたデータは数えるだけ(取り込まない) */ }
+  });
+  if (!normalized.length) { toast("読み込める曲がありませんでした"); return; }
+  var titles = normalized.map(function (s) { return s.title; });
+  var shown = titles.slice(0, 3).join("」「");
+  var titleStr = "「" + shown + "」" + (titles.length > 3 ? "ほか" : "");
+  if (!confirm(titleStr + "を取り込みますか?(" + normalized.length + "曲)")) {
+    toast("取り込みを取り消しました", true);
+    return;
+  }
+  var last = null, ok = 0;
+  normalized.forEach(function (s) {
+    reissueEventIds(s);
+    s.id = newId("s");
+    s.createdAt = s.updatedAt = new Date().toISOString();
+    if (saveScore(s)) { ok++; last = s; }
+  });
+  // 保存領域が足りない端末では一部(または全部)保存できないことがあるので、実際に保存できた数だけ知らせる
+  if (!ok) { toast("保存できませんでした(端末の保存領域が足りません)"); return; }
+  // 共有ダイアログを開いたまま取り込むと、取り込んだ曲がその下に隠れてしまうので閉じる(開いていなければ何もしない)
+  $("dlgShare").close();
+  openScoreObject(last);
+  if (ok === normalized.length) toast(ok + "曲を取り込みました", true);
+  else toast(ok + "曲を取り込みました(残りは保存領域が足りず入りませんでした)");
+}
+
 function deleteScore(id) {
   var meta = listScores().filter(function (x) { return x.id === id; })[0];
   if (!confirm("「" + (meta ? meta.title : "") + "」を削除します。元に戻せません。よいですか?")) return;
